@@ -17,7 +17,7 @@ const {
 const fs = require("fs");
 
 // ======================================================
-// CONFIG
+// CONFIGURATION
 // ======================================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -55,7 +55,7 @@ const client = new Client({
 });
 
 // ======================================================
-// DATA
+// BASE DE DONNÉES
 // ======================================================
 
 const DATA_FILE = "./data.json";
@@ -69,7 +69,11 @@ if (fs.existsSync(DATA_FILE)) {
     data = JSON.parse(
       fs.readFileSync(DATA_FILE, "utf8")
     );
-  } catch {
+  } catch (error) {
+    console.error(
+      "⚠️ data.json invalide, création d'une nouvelle base."
+    );
+
     data = {
       guilds: {}
     };
@@ -77,21 +81,32 @@ if (fs.existsSync(DATA_FILE)) {
 }
 
 function saveData() {
-  fs.writeFileSync(
-    DATA_FILE,
-    JSON.stringify(data, null, 2),
-    "utf8"
-  );
+  try {
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify(data, null, 2),
+      "utf8"
+    );
+  } catch (error) {
+    console.error(
+      "❌ Erreur sauvegarde data.json :",
+      error
+    );
+  }
 }
 
 function getCfg(guildId) {
+
   if (!data.guilds[guildId]) {
+
     data.guilds[guildId] = {
+
       logChannel: null,
 
       antispam: false,
       antilink: false,
       antibot: false,
+      antiraid: false,
 
       raidmode: false,
       lockdown: false,
@@ -106,20 +121,53 @@ function getCfg(guildId) {
 
       exemptRoles: [],
 
-      warns: {}
+      warns: {},
+
+      raidJoins: [],
+
+      welcomeChannel: null
+
     };
 
     saveData();
   }
 
-  return data.guilds[guildId];
+  const cfg = data.guilds[guildId];
+
+  // Compatibilité avec une ancienne data.json
+
+  if (!Array.isArray(cfg.allowedDomains)) {
+    cfg.allowedDomains = [
+      "discord.com",
+      "discord.gg",
+      "youtube.com",
+      "youtu.be",
+      "github.com"
+    ];
+  }
+
+  if (!Array.isArray(cfg.exemptRoles)) {
+    cfg.exemptRoles = [];
+  }
+
+  if (!cfg.warns) {
+    cfg.warns = {};
+  }
+
+  if (!Array.isArray(cfg.raidJoins)) {
+    cfg.raidJoins = [];
+  }
+
+  return cfg;
 }
 
 // ======================================================
-// AUTOMOD
+// VARIABLES
 // ======================================================
 
 const spamMap = new Map();
+
+let BOT_OWNER_ID = null;
 
 const URL_RE =
   /(https?:\/\/|www\.)[^\s]+/i;
@@ -128,8 +176,23 @@ const URL_RE =
 // OUTILS
 // ======================================================
 
+function getWarns(guildId, userId) {
+
+  const cfg = getCfg(guildId);
+
+  if (!cfg.warns[userId]) {
+    cfg.warns[userId] = [];
+    saveData();
+  }
+
+  return cfg.warns[userId];
+}
+
 function canModerate(member, target) {
-  if (!target) return false;
+
+  if (!member || !target) {
+    return false;
+  }
 
   if (target.id === member.id) {
     return false;
@@ -150,36 +213,148 @@ function canModerate(member, target) {
 }
 
 async function sendLog(guild, content) {
+
   const cfg = getCfg(guild.id);
 
-  if (!cfg.logChannel) return;
+  if (!cfg.logChannel) {
+    return;
+  }
 
   const channel =
-    guild.channels.cache.get(cfg.logChannel);
+    guild.channels.cache.get(
+      cfg.logChannel
+    );
 
-  if (!channel) return;
+  if (!channel) {
+    return;
+  }
 
-  if (!channel.isTextBased()) return;
+  if (!channel.isTextBased()) {
+    return;
+  }
 
   try {
+
     await channel.send({
       content,
       allowedMentions: {
         parse: []
       }
     });
+
   } catch {}
 }
 
-function getWarns(guildId, userId) {
-  const cfg = getCfg(guildId);
+function getSendableChannel(guild) {
 
-  if (!cfg.warns[userId]) {
-    cfg.warns[userId] = [];
-    saveData();
+  if (
+    guild.systemChannel &&
+    guild.systemChannel.isTextBased()
+  ) {
+
+    const permissions =
+      guild.systemChannel.permissionsFor(
+        client.user
+      );
+
+    if (
+      permissions?.has(
+        PermissionFlagsBits.SendMessages
+      )
+    ) {
+
+      return guild.systemChannel;
+
+    }
   }
 
-  return cfg.warns[userId];
+  return guild.channels.cache.find(
+    channel => {
+
+      if (!channel.isTextBased()) {
+        return false;
+      }
+
+      const permissions =
+        channel.permissionsFor(
+          client.user
+        );
+
+      return permissions?.has(
+        PermissionFlagsBits.SendMessages
+      );
+
+    }
+  );
+}
+
+// ======================================================
+// PROPRIÉTAIRE D'AUTOMOD
+// ======================================================
+
+async function loadBotOwner() {
+
+  try {
+
+    await client.application.fetch();
+
+    const owner =
+      client.application.owner;
+
+    if (owner) {
+
+      BOT_OWNER_ID =
+        owner.id;
+
+      console.log(
+        `👑 Owner Automod : ${1368642102615085106}`
+      );
+
+    }
+
+  } catch (error) {
+
+    console.error(
+      "❌ Impossible de récupérer le propriétaire d'Automod :",
+      error
+    );
+
+  }
+}
+
+// ======================================================
+// STATUT
+// ======================================================
+
+function updateBotStatus() {
+
+  if (!client.user) {
+    return;
+  }
+
+  const count =
+    client.guilds.cache.size;
+
+  const text =
+    `/help • ${count} serveur(s)`;
+
+  client.user.setPresence({
+
+    status: "online",
+
+    activities: [
+      {
+        name: "Automod",
+        state: text,
+        type: ActivityType.Custom
+      }
+    ]
+
+  });
+
+  console.log(
+    `📊 Statut : ${text}`
+  );
 }
 
 // ======================================================
@@ -188,12 +363,82 @@ function getWarns(guildId, userId) {
 
 const commands = [
 
+  // ----------------------------------------------------
   // HELP
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("Afficher l'aide d'Automod"),
+    .setDescription(
+      "Afficher les commandes d'Automod"
+    ),
 
+  // ----------------------------------------------------
+  // MENU
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("menu")
+    .setDescription(
+      "Ouvrir le menu principal d'Automod"
+    ),
+
+  // ----------------------------------------------------
+  // AUTOMOD
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("automod")
+    .setDescription(
+      "Ouvrir le centre de protection Automod"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    ),
+
+  // ----------------------------------------------------
+  // SECURITY CONFIG
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("securityconfig")
+    .setDescription(
+      "Configurer les protections de sécurité"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    ),
+
+  // ----------------------------------------------------
+  // SERVER CONFIG
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("serverconfig")
+    .setDescription(
+      "Voir la configuration du serveur"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    ),
+
+  // ----------------------------------------------------
+  // TICKET CONFIG
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("ticketconfig")
+    .setDescription(
+      "Voir la configuration du système de tickets"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    ),
+
+  // ----------------------------------------------------
   // BAN
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("ban")
     .setDescription("Bannir un membre")
@@ -213,7 +458,10 @@ const commands = [
         .setRequired(false)
     ),
 
+  // ----------------------------------------------------
   // UNBAN
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("unban")
     .setDescription("Débannir un utilisateur")
@@ -227,7 +475,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // KICK
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Expulser un membre")
@@ -247,7 +498,10 @@ const commands = [
         .setRequired(false)
     ),
 
+  // ----------------------------------------------------
   // TIMEOUT
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("timeout")
     .setDescription("Mettre un membre en timeout")
@@ -275,10 +529,13 @@ const commands = [
         .setRequired(false)
     ),
 
+  // ----------------------------------------------------
   // UNTIMEOUT
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("untimeout")
-    .setDescription("Retirer le timeout")
+    .setDescription("Retirer un timeout")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
@@ -289,7 +546,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // WARN
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription("Avertir un membre")
@@ -309,7 +569,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // UNWARN
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("unwarn")
     .setDescription("Retirer un avertissement")
@@ -330,7 +593,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // CASIER
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("casier")
     .setDescription("Voir les avertissements")
@@ -344,10 +610,15 @@ const commands = [
         .setRequired(true)
     ),
 
-  // CLEARWARNS
+  // ----------------------------------------------------
+  // CLEAR WARNS
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("clearwarns")
-    .setDescription("Supprimer tous les avertissements")
+    .setDescription(
+      "Supprimer tous les avertissements"
+    )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
@@ -358,7 +629,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // CLEAR
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("clear")
     .setDescription("Supprimer des messages")
@@ -374,7 +648,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // PURGE
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("purge")
     .setDescription("Supprimer plusieurs messages")
@@ -390,7 +667,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // SLOWMODE
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("slowmode")
     .setDescription("Configurer le slowmode")
@@ -406,7 +686,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // LOCK
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("lock")
     .setDescription("Verrouiller le salon")
@@ -414,7 +697,10 @@ const commands = [
       PermissionFlagsBits.ManageGuild
     ),
 
+  // ----------------------------------------------------
   // UNLOCK
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("unlock")
     .setDescription("Déverrouiller le salon")
@@ -422,7 +708,10 @@ const commands = [
       PermissionFlagsBits.ManageGuild
     ),
 
+  // ----------------------------------------------------
   // NICK
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("nick")
     .setDescription("Modifier le pseudo")
@@ -442,7 +731,10 @@ const commands = [
         .setRequired(true)
     ),
 
-  // ROLEADD
+  // ----------------------------------------------------
+  // ROLE ADD
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("roleadd")
     .setDescription("Ajouter un rôle")
@@ -462,7 +754,10 @@ const commands = [
         .setRequired(true)
     ),
 
-  // ROLEREMOVE
+  // ----------------------------------------------------
+  // ROLE REMOVE
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("roleremove")
     .setDescription("Retirer un rôle")
@@ -482,10 +777,15 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // USERINFO
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("userinfo")
-    .setDescription("Informations sur un utilisateur")
+    .setDescription(
+      "Informations sur un utilisateur"
+    )
     .addUserOption(option =>
       option
         .setName("membre")
@@ -493,12 +793,20 @@ const commands = [
         .setRequired(false)
     ),
 
+  // ----------------------------------------------------
   // SERVERINFO
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("serverinfo")
-    .setDescription("Informations sur le serveur"),
+    .setDescription(
+      "Informations sur le serveur"
+    ),
 
+  // ----------------------------------------------------
   // SAY
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("say")
     .setDescription("Faire parler Automod")
@@ -512,7 +820,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // ANNOUNCE
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("announce")
     .setDescription("Créer une annonce")
@@ -526,7 +837,10 @@ const commands = [
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // SETUP
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Configurer Automod")
@@ -536,7 +850,9 @@ const commands = [
     .addSubcommand(sub =>
       sub
         .setName("logs")
-        .setDescription("Configurer les logs")
+        .setDescription(
+          "Configurer le salon des logs"
+        )
         .addChannelOption(option =>
           option
             .setName("salon")
@@ -548,100 +864,109 @@ const commands = [
         )
     ),
 
-  // AUTOMOD
-  new SlashCommandBuilder()
-    .setName("automod")
-    .setDescription("Ouvrir le panneau Automod")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    ),
-
+  // ----------------------------------------------------
   // ANTISPAM
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("antispam")
-    .setDescription("Activer ou désactiver l'anti-spam")
+    .setDescription("Configurer l'anti-spam")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
     .addBooleanOption(option =>
       option
         .setName("actif")
-        .setDescription("Activer")
+        .setDescription("Activer ou désactiver")
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // ANTILINKS
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("antilinks")
-    .setDescription("Activer ou désactiver l'anti-liens")
+    .setDescription("Configurer l'anti-liens")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
     .addBooleanOption(option =>
       option
         .setName("actif")
-        .setDescription("Activer")
+        .setDescription("Activer ou désactiver")
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
+  // ANTIBOT
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("antibot")
+    .setDescription("Configurer l'anti-bots")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addBooleanOption(option =>
+      option
+        .setName("actif")
+        .setDescription("Activer ou désactiver")
+        .setRequired(true)
+    ),
+
+  // ----------------------------------------------------
+  // ANTIRAID
+  // ----------------------------------------------------
+
+  new SlashCommandBuilder()
+    .setName("antiraid")
+    .setDescription("Configurer l'anti-raid")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addBooleanOption(option =>
+      option
+        .setName("actif")
+        .setDescription("Activer ou désactiver")
+        .setRequired(true)
+    ),
+
+  // ----------------------------------------------------
   // RAIDMODE
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("raidmode")
-    .setDescription("Activer ou désactiver le mode raid")
+    .setDescription("Activer le mode raid")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
     .addBooleanOption(option =>
       option
         .setName("actif")
-        .setDescription("Activer")
+        .setDescription("Activer ou désactiver")
         .setRequired(true)
     ),
 
+  // ----------------------------------------------------
   // LOCKDOWN
+  // ----------------------------------------------------
+
   new SlashCommandBuilder()
     .setName("lockdown")
-    .setDescription("Verrouiller le serveur")
+    .setDescription("Verrouiller tout le serveur")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
     .addBooleanOption(option =>
       option
         .setName("actif")
-        .setDescription("Activer")
+        .setDescription("Activer ou désactiver")
         .setRequired(true)
     )
 
 ].map(command => command.toJSON());
-
-// ======================================================
-// STATUT DU BOT
-// ======================================================
-
-function updateBotStatus() {
-
-  const count =
-    client.guilds.cache.size;
-
-  const text =
-    `/help • ${count} serveur(s)`;
-
-  client.user.setPresence({
-    status: "online",
-
-    activities: [
-      {
-        name: "Automod",
-        state: text,
-        type: ActivityType.Custom
-      }
-    ]
-  });
-
-  console.log(
-    `📊 Statut : ${text}`
-  );
-}
 
 // ======================================================
 // READY
@@ -651,35 +976,40 @@ client.once("ready", async () => {
 
   console.log("");
   console.log("======================================");
-  console.log("           AUTOMOD EN LIGNE");
+  console.log("          🤖 AUTOMOD EN LIGNE");
   console.log("======================================");
+
   console.log(
-    `🤖 Nom : ${client.user.username}`
+    `🤖 Bot : ${client.user.tag}`
   );
+
   console.log(
     `🆔 ID : ${client.user.id}`
   );
+
   console.log(
     `🌐 Serveurs : ${client.guilds.cache.size}`
   );
+
   console.log("");
 
-  // Statut immédiat
+  await loadBotOwner();
+
   updateBotStatus();
 
-  // Actualisation toutes les 5 minutes
   setInterval(
     updateBotStatus,
     5 * 60 * 1000
   );
 
-  // Commandes
   try {
 
     if (GUILD_ID) {
 
       const guild =
-        await client.guilds.fetch(GUILD_ID);
+        await client.guilds.fetch(
+          GUILD_ID
+        );
 
       await guild.commands.set(
         commands
@@ -698,12 +1028,13 @@ client.once("ready", async () => {
       console.log(
         `✅ ${commands.length} commandes globales installées`
       );
+
     }
 
   } catch (error) {
 
     console.error(
-      "❌ Erreur commandes :",
+      "❌ Erreur déploiement commandes :",
       error
     );
 
@@ -712,27 +1043,70 @@ client.once("ready", async () => {
 });
 
 // ======================================================
-// SERVEUR REJOINT
+// AUTOMOD REJOINT UN SERVEUR
 // ======================================================
 
 client.on(
   "guildCreate",
-  guild => {
+  async guild => {
 
     getCfg(guild.id);
 
     saveData();
 
     console.log(
-      `➕ Automod rejoint ${guild.name}`
+      `➕ Automod rejoint : ${guild.name}`
     );
 
     updateBotStatus();
+
+    const channel =
+      getSendableChannel(guild);
+
+    if (!channel) {
+      return;
+    }
+
+    const embed =
+      new EmbedBuilder()
+
+        .setColor(0x5865F2)
+
+        .setTitle(
+          "✨ Automod est arrivé"
+        )
+
+        .setDescription(
+          `Salut **${guild.name}** 👋\n\n` +
+          `Je suis **Automod**, votre bot de modération et de sécurité.\n\n` +
+          `### 🚀 Démarrage rapide\n` +
+          `• \`/menu\` — interface principale\n` +
+          `• \`/serverconfig\` — configuration du serveur\n` +
+          `• \`/securityconfig\` — protections\n` +
+          `• \`/automod\` — centre de sécurité\n\n` +
+          `✅ **Commandes slash installées sur ce serveur.**`
+        )
+
+        .setFooter({
+          text:
+            "Automod • Merci de votre confiance"
+        })
+
+        .setTimestamp();
+
+    try {
+
+      await channel.send({
+        embeds: [embed]
+      });
+
+    } catch {}
+
   }
 );
 
 // ======================================================
-// SERVEUR QUITTÉ
+// AUTOMOD QUITTE UN SERVEUR
 // ======================================================
 
 client.on(
@@ -740,10 +1114,11 @@ client.on(
   guild => {
 
     console.log(
-      `➖ Automod quitte ${guild.name}`
+      `➖ Automod quitte : ${guild.name}`
     );
 
     updateBotStatus();
+
   }
 );
 
@@ -756,9 +1131,73 @@ client.on(
   async member => {
 
     const cfg =
-      getCfg(member.guild.id);
+      getCfg(
+        member.guild.id
+      );
 
-    // Anti-bot
+    // ==================================================
+    // 👑 OWNER D'AUTOMOD
+    // ==================================================
+
+    if (
+      BOT_OWNER_ID &&
+      member.id === BOT_OWNER_ID
+    ) {
+
+      const channel =
+        getSendableChannel(
+          member.guild
+        );
+
+      if (channel) {
+
+        const avatar =
+          member.user.displayAvatarURL({
+            extension: "png",
+            size: 256
+          });
+
+        const embed =
+          new EmbedBuilder()
+
+            .setColor(0xF1C40F)
+
+            .setTitle(
+              "⚡ Le créateur d'Automod est là"
+            )
+
+            .setDescription(
+              `**${member.user.username}** — **Owner d'Automod** — vient de rejoindre **${member.guild.name}**.\n\n` +
+              `> 🫡 **Accueil premium**`
+            )
+
+            .setThumbnail(
+              avatar
+            )
+
+            .setFooter({
+              text:
+                "Automod • Accueil premium"
+            })
+
+            .setTimestamp();
+
+        try {
+
+          await channel.send({
+            embeds: [embed]
+          });
+
+        } catch {}
+
+      }
+
+    }
+
+    // ==================================================
+    // 🤖 ANTI-BOT
+    // ==================================================
+
     if (
       cfg.antibot &&
       member.user.bot
@@ -780,7 +1219,52 @@ client.on(
       return;
     }
 
-    // Raidmode
+    // ==================================================
+    // 🚨 ANTI-RAID
+    // ==================================================
+
+    if (cfg.antiraid) {
+
+      const now =
+        Date.now();
+
+      cfg.raidJoins =
+        cfg.raidJoins.filter(
+          timestamp =>
+            now - timestamp <
+            10000
+        );
+
+      cfg.raidJoins.push(
+        now
+      );
+
+      // 5 arrivées en 10 secondes
+      if (
+        cfg.raidJoins.length >= 5 &&
+        !cfg.raidmode
+      ) {
+
+        cfg.raidmode = true;
+
+        saveData();
+
+        await sendLog(
+          member.guild,
+          `🚨 **ANTI-RAID ACTIVÉ AUTOMATIQUEMENT**\n` +
+          `Automod a détecté plusieurs arrivées rapides sur **${member.guild.name}**.`
+        );
+
+      }
+
+      saveData();
+
+    }
+
+    // ==================================================
+    // RAID MODE
+    // ==================================================
+
     if (cfg.raidmode) {
 
       await sendLog(
@@ -794,21 +1278,30 @@ client.on(
 );
 
 // ======================================================
-// MESSAGE AUTOMOD
+// MESSAGES
 // ======================================================
 
 client.on(
   "messageCreate",
   async message => {
 
-    if (!message.guild) return;
+    if (!message.guild) {
+      return;
+    }
 
-    if (message.author.bot) return;
+    if (message.author.bot) {
+      return;
+    }
 
     const cfg =
-      getCfg(message.guild.id);
+      getCfg(
+        message.guild.id
+      );
 
-    // Rôle exempté
+    // --------------------------------------------------
+    // RÔLES EXEMPTÉS
+    // --------------------------------------------------
+
     const exempt =
       message.member?.roles?.cache?.some(
         role =>
@@ -817,11 +1310,13 @@ client.on(
           )
       );
 
-    if (exempt) return;
+    if (exempt) {
+      return;
+    }
 
-    // ----------------------------------------------
+    // --------------------------------------------------
     // ANTI-SPAM
-    // ----------------------------------------------
+    // --------------------------------------------------
 
     if (cfg.antispam) {
 
@@ -840,7 +1335,9 @@ client.on(
             now - timestamp < 6000
         );
 
-      timestamps.push(now);
+      timestamps.push(
+        now
+      );
 
       spamMap.set(
         key,
@@ -849,43 +1346,59 @@ client.on(
 
       if (timestamps.length >= 5) {
 
-        spamMap.delete(key);
+        spamMap.delete(
+          key
+        );
 
         try {
-
-          await message.channel.bulkDelete(
-            20,
-            true
-          );
-
+          await message.delete();
         } catch {}
 
         await sendLog(
           message.guild,
-          `💬 **Anti-Spam** : ${message.author.tag} a été détecté pour spam.`
+          `💬 **Anti-Spam** : ${message.author.tag} a été détecté.`
         );
+
+        try {
+
+          if (
+            message.member.moderatable
+          ) {
+
+            await message.member.timeout(
+              10000,
+              "Automod • Anti-Spam"
+            );
+
+          }
+
+        } catch {}
 
         return;
       }
 
     }
 
-    // ----------------------------------------------
+    // --------------------------------------------------
     // ANTI-LIENS
-    // ----------------------------------------------
+    // --------------------------------------------------
 
     if (
       cfg.antilink &&
-      URL_RE.test(message.content)
+      URL_RE.test(
+        message.content
+      )
     ) {
 
       const channelName =
         message.channel.name?.toLowerCase() ||
         "";
 
-      // Ticket exempté
+      // Tickets exemptés
       if (
-        channelName.includes("ticket")
+        channelName.includes(
+          "ticket"
+        )
       ) {
         return;
       }
@@ -951,6 +1464,277 @@ client.on(
 );
 
 // ======================================================
+// EMBED AUTOMOD
+// ======================================================
+
+function createAutomodEmbed(
+  guild,
+  cfg
+) {
+
+  const status =
+    value =>
+      value
+        ? "🟢 Activé"
+        : "🔴 Désactivé";
+
+  const logs =
+    cfg.logChannel
+      ? `<#${cfg.logChannel}>`
+      : "❌ Non configurés";
+
+  return new EmbedBuilder()
+
+    .setColor(0x5865F2)
+
+    .setTitle(
+      "🛡️ Automod • Centre de protection"
+    )
+
+    .setDescription(
+      `Bienvenue dans le centre de sécurité de **${guild.name}**.\n\n` +
+      `Gère les protections directement avec les boutons ci-dessous.`
+    )
+
+    .addFields(
+
+      {
+        name: "💬 Anti-Spam",
+        value:
+          status(cfg.antispam),
+        inline: true
+      },
+
+      {
+        name: "🔗 Anti-Liens",
+        value:
+          status(cfg.antilink),
+        inline: true
+      },
+
+      {
+        name: "🤖 Anti-Bots",
+        value:
+          status(cfg.antibot),
+        inline: true
+      },
+
+      {
+        name: "🚨 Anti-Raid",
+        value:
+          status(cfg.antiraid),
+        inline: true
+      },
+
+      {
+        name: "⚠️ Mode Raid",
+        value:
+          status(cfg.raidmode),
+        inline: true
+      },
+
+      {
+        name: "🔒 Lockdown",
+        value:
+          status(cfg.lockdown),
+        inline: true
+      },
+
+      {
+        name: "📋 Salon des logs",
+        value:
+          logs,
+        inline: false
+      }
+
+    )
+
+    .setFooter({
+      text:
+        "Automod • Protection intelligente"
+    })
+
+    .setTimestamp();
+
+}
+
+// ======================================================
+// BOUTONS AUTOMOD
+// ======================================================
+
+function createAutomodButtons(
+  cfg
+) {
+
+  return [
+
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_antispam"
+          )
+          .setLabel(
+            cfg.antispam
+              ? "Anti-Spam ON"
+              : "Anti-Spam OFF"
+          )
+          .setEmoji("💬")
+          .setStyle(
+            cfg.antispam
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_antilink"
+          )
+          .setLabel(
+            cfg.antilink
+              ? "Anti-Liens ON"
+              : "Anti-Liens OFF"
+          )
+          .setEmoji("🔗")
+          .setStyle(
+            cfg.antilink
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_antibot"
+          )
+          .setLabel(
+            cfg.antibot
+              ? "Anti-Bots ON"
+              : "Anti-Bots OFF"
+          )
+          .setEmoji("🤖")
+          .setStyle(
+            cfg.antibot
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_antiraid"
+          )
+          .setLabel(
+            cfg.antiraid
+              ? "Anti-Raid ON"
+              : "Anti-Raid OFF"
+          )
+          .setEmoji("🚨")
+          .setStyle(
+            cfg.antiraid
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          )
+
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_lockdown"
+          )
+          .setLabel(
+            cfg.lockdown
+              ? "Lockdown ON"
+              : "Lockdown OFF"
+          )
+          .setEmoji("🔒")
+          .setStyle(
+            cfg.lockdown
+              ? ButtonStyle.Danger
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_raidmode"
+          )
+          .setLabel(
+            cfg.raidmode
+              ? "Raidmode ON"
+              : "Raidmode OFF"
+          )
+          .setEmoji("⚠️")
+          .setStyle(
+            cfg.raidmode
+              ? ButtonStyle.Danger
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_refresh"
+          )
+          .setLabel(
+            "Actualiser"
+          )
+          .setEmoji("🔄")
+          .setStyle(
+            ButtonStyle.Primary
+          )
+
+      )
+
+  ];
+
+}
+
+// ======================================================
+// LOCKDOWN
+// ======================================================
+
+async function setLockdown(
+  guild,
+  active
+) {
+
+  let modified =
+    0;
+
+  for (
+    const channel
+    of guild.channels.cache.values()
+  ) {
+
+    if (
+      !channel.isTextBased()
+    ) {
+      continue;
+    }
+
+    try {
+
+      await channel.permissionOverwrites.edit(
+        guild.roles.everyone,
+        {
+          SendMessages:
+            active
+              ? false
+              : null
+        }
+      );
+
+      modified++;
+
+    } catch {}
+
+  }
+
+  return modified;
+}
+
+// ======================================================
 // INTERACTIONS
 // ======================================================
 
@@ -962,107 +1746,177 @@ client.on(
     // BOUTONS
     // ==================================================
 
-    if (interaction.isButton()) {
+    if (
+      interaction.isButton()
+    ) {
+
+      if (
+        !interaction.guild
+      ) {
+        return;
+      }
+
+      if (
+        !interaction.memberPermissions?.has(
+          PermissionFlagsBits.ManageGuild
+        )
+      ) {
+
+        return interaction.reply({
+          content:
+            "❌ Permission **Gérer le serveur** requise.",
+          ephemeral: true
+        });
+
+      }
+
+      const cfg =
+        getCfg(
+          interaction.guild.id
+        );
+
+      // ------------------------------------------------
+      // REFRESH
+      // ------------------------------------------------
 
       if (
         interaction.customId ===
         "automod_refresh"
       ) {
 
-        const cfg =
-          getCfg(
-            interaction.guild.id
-          );
-
         return interaction.update({
+
           embeds: [
             createAutomodEmbed(
               interaction.guild,
               cfg
             )
           ],
+
           components:
             createAutomodButtons(
               cfg
             )
+
         });
 
       }
+
+      // ------------------------------------------------
+      // ANTISPAM
+      // ------------------------------------------------
 
       if (
-        interaction.customId.startsWith(
-          "automod_"
-        )
+        interaction.customId ===
+        "automod_antispam"
       ) {
 
-        if (
-          !interaction.memberPermissions?.has(
-            PermissionFlagsBits.ManageGuild
-          )
-        ) {
-
-          return interaction.reply({
-            content:
-              "❌ Permission **Gérer le serveur** requise.",
-            ephemeral: true
-          });
-
-        }
-
-        const cfg =
-          getCfg(
-            interaction.guild.id
-          );
-
-        if (
-          interaction.customId ===
-          "automod_antispam"
-        ) {
-
-          cfg.antispam =
-            !cfg.antispam;
-        }
-
-        if (
-          interaction.customId ===
-          "automod_antilink"
-        ) {
-
-          cfg.antilink =
-            !cfg.antilink;
-        }
-
-        if (
-          interaction.customId ===
-          "automod_antibot"
-        ) {
-
-          cfg.antibot =
-            !cfg.antibot;
-        }
-
-        saveData();
-
-        return interaction.update({
-          embeds: [
-            createAutomodEmbed(
-              interaction.guild,
-              cfg
-            )
-          ],
-          components:
-            createAutomodButtons(
-              cfg
-            )
-        });
+        cfg.antispam =
+          !cfg.antispam;
 
       }
 
-      return;
+      // ------------------------------------------------
+      // ANTILINK
+      // ------------------------------------------------
+
+      if (
+        interaction.customId ===
+        "automod_antilink"
+      ) {
+
+        cfg.antilink =
+          !cfg.antilink;
+
+      }
+
+      // ------------------------------------------------
+      // ANTIBOT
+      // ------------------------------------------------
+
+      if (
+        interaction.customId ===
+        "automod_antibot"
+      ) {
+
+        cfg.antibot =
+          !cfg.antibot;
+
+      }
+
+      // ------------------------------------------------
+      // ANTIRAID
+      // ------------------------------------------------
+
+      if (
+        interaction.customId ===
+        "automod_antiraid"
+      ) {
+
+        cfg.antiraid =
+          !cfg.antiraid;
+
+        if (!cfg.antiraid) {
+          cfg.raidJoins = [];
+        }
+
+      }
+
+      // ------------------------------------------------
+      // RAIDMODE
+      // ------------------------------------------------
+
+      if (
+        interaction.customId ===
+        "automod_raidmode"
+      ) {
+
+        cfg.raidmode =
+          !cfg.raidmode;
+
+      }
+
+      // ------------------------------------------------
+      // LOCKDOWN
+      // ------------------------------------------------
+
+      if (
+        interaction.customId ===
+        "automod_lockdown"
+      ) {
+
+        cfg.lockdown =
+          !cfg.lockdown;
+
+        await setLockdown(
+          interaction.guild,
+          cfg.lockdown
+        );
+
+      }
+
+      saveData();
+
+      return interaction.update({
+
+        embeds: [
+          createAutomodEmbed(
+            interaction.guild,
+            cfg
+          )
+        ],
+
+        components:
+          createAutomodButtons(
+            cfg
+          )
+
+      });
+
     }
 
     // ==================================================
-    // SLASH COMMANDS
+    // SLASH COMMAND
     // ==================================================
 
     if (
@@ -1075,7 +1929,7 @@ client.on(
       interaction;
 
     // ==================================================
-    // HELP PUBLIC
+    // HELP
     // ==================================================
 
     if (
@@ -1084,19 +1938,23 @@ client.on(
 
       const embed =
         new EmbedBuilder()
+
           .setColor(0x5865F2)
+
           .setTitle(
-            "🤖 Automod • Commandes"
+            "🤖 Automod • Centre d'aide"
           )
+
           .setDescription(
-            "Voici les commandes disponibles sur Automod."
+            "Bienvenue sur **Automod**, votre bot de modération et de sécurité."
           )
+
           .addFields(
 
             {
               name: "🛡️ Sécurité",
               value:
-                "`/automod` `/antispam` `/antilinks` `/raidmode` `/lockdown`"
+                "`/automod` `/securityconfig` `/antispam` `/antilinks` `/antibot` `/antiraid` `/raidmode` `/lockdown`"
             },
 
             {
@@ -1118,9 +1976,9 @@ client.on(
             },
 
             {
-              name: "⚙️ Gestion",
+              name: "⚙️ Configuration",
               value:
-                "`/nick` `/roleadd` `/roleremove` `/setup`"
+                "`/menu` `/serverconfig` `/ticketconfig` `/setup`"
             },
 
             {
@@ -1136,10 +1994,12 @@ client.on(
             }
 
           )
+
           .setFooter({
             text:
               `Automod • ${client.guilds.cache.size} serveur(s)`
           })
+
           .setTimestamp();
 
       return i.reply({
@@ -1149,7 +2009,7 @@ client.on(
     }
 
     // ==================================================
-    // PERMISSION
+    // PERMISSIONS
     // ==================================================
 
     if (
@@ -1170,6 +2030,236 @@ client.on(
       getCfg(
         i.guild.id
       );
+
+    // ==================================================
+    // MENU
+    // ==================================================
+
+    if (
+      i.commandName === "menu"
+    ) {
+
+      const embed =
+        new EmbedBuilder()
+
+          .setColor(0x5865F2)
+
+          .setTitle(
+            "✨ Automod • Menu principal"
+          )
+
+          .setDescription(
+            `Bienvenue dans le panneau de gestion d'**Automod**.\n\n` +
+            `🛡️ **Sécurité**\n` +
+            `Gère les protections de ton serveur.\n\n` +
+            `⚙️ **Configuration**\n` +
+            `Configure les logs et les paramètres.\n\n` +
+            `🎫 **Tickets**\n` +
+            `Accède à la configuration du système de tickets.\n\n` +
+            `Utilise les commandes ci-dessous pour accéder à chaque section.`
+          )
+
+          .addFields(
+            {
+              name: "🛡️ Sécurité",
+              value:
+                "`/automod` ou `/securityconfig`"
+            },
+            {
+              name: "⚙️ Serveur",
+              value:
+                "`/serverconfig`"
+            },
+            {
+              name: "🎫 Tickets",
+              value:
+                "`/ticketconfig`"
+            }
+          )
+
+          .setFooter({
+            text:
+              "Automod • Menu principal"
+          })
+
+          .setTimestamp();
+
+      return i.reply({
+        embeds: [embed]
+      });
+
+    }
+
+    // ==================================================
+    // AUTOMOD
+    // ==================================================
+
+    if (
+      i.commandName === "automod" ||
+      i.commandName === "securityconfig"
+    ) {
+
+      return i.reply({
+
+        embeds: [
+          createAutomodEmbed(
+            i.guild,
+            cfg
+          )
+        ],
+
+        components:
+          createAutomodButtons(
+            cfg
+          )
+
+      });
+
+    }
+
+    // ==================================================
+    // SERVER CONFIG
+    // ==================================================
+
+    if (
+      i.commandName === "serverconfig"
+    ) {
+
+      const embed =
+        new EmbedBuilder()
+
+          .setColor(0x5865F2)
+
+          .setTitle(
+            "⚙️ Automod • Configuration serveur"
+          )
+
+          .setDescription(
+            "Configuration actuelle du serveur."
+          )
+
+          .addFields(
+
+            {
+              name: "📋 Logs",
+              value:
+                cfg.logChannel
+                  ? `<#${cfg.logChannel}>`
+                  : "❌ Non configurés",
+              inline: true
+            },
+
+            {
+              name: "💬 Anti-Spam",
+              value:
+                cfg.antispam
+                  ? "🟢 Activé"
+                  : "🔴 Désactivé",
+              inline: true
+            },
+
+            {
+              name: "🔗 Anti-Liens",
+              value:
+                cfg.antilink
+                  ? "🟢 Activé"
+                  : "🔴 Désactivé",
+              inline: true
+            },
+
+            {
+              name: "🤖 Anti-Bots",
+              value:
+                cfg.antibot
+                  ? "🟢 Activé"
+                  : "🔴 Désactivé",
+              inline: true
+            },
+
+            {
+              name: "🚨 Anti-Raid",
+              value:
+                cfg.antiraid
+                  ? "🟢 Activé"
+                  : "🔴 Désactivé",
+              inline: true
+            },
+
+            {
+              name: "🔒 Lockdown",
+              value:
+                cfg.lockdown
+                  ? "🟢 Activé"
+                  : "🔴 Désactivé",
+              inline: true
+            }
+
+          )
+
+          .setFooter({
+            text:
+              "Automod • Configuration"
+          })
+
+          .setTimestamp();
+
+      return i.reply({
+        embeds: [embed]
+      });
+
+    }
+
+    // ==================================================
+    // TICKET CONFIG
+    // ==================================================
+
+    if (
+      i.commandName === "ticketconfig"
+    ) {
+
+      const embed =
+        new EmbedBuilder()
+
+          .setColor(0x5865F2)
+
+          .setTitle(
+            "🎫 Automod • Ticket Config"
+          )
+
+          .setDescription(
+            "Configuration du système de tickets."
+          )
+
+          .addFields(
+
+            {
+              name: "🎫 Système",
+              value:
+                "⚙️ Configuration disponible"
+            },
+
+            {
+              name: "📋 Logs",
+              value:
+                cfg.logChannel
+                  ? `<#${cfg.logChannel}>`
+                  : "❌ Non configurés"
+            }
+
+          )
+
+          .setFooter({
+            text:
+              "Automod • Ticket System"
+          })
+
+          .setTimestamp();
+
+      return i.reply({
+        embeds: [embed]
+      });
+
+    }
 
     // ==================================================
     // BAN
@@ -1489,11 +2579,15 @@ client.on(
         );
 
       warns.push({
+
         reason,
+
         moderator:
           i.user.id,
+
         date:
           new Date().toISOString()
+
       });
 
       saveData();
@@ -1581,10 +2675,13 @@ client.on(
 
       const embed =
         new EmbedBuilder()
+
           .setColor(0x5865F2)
+
           .setTitle(
             `📋 Casier • ${user.tag}`
           )
+
           .setThumbnail(
             user.displayAvatarURL()
           );
@@ -1615,7 +2712,7 @@ client.on(
     }
 
     // ==================================================
-    // CLEARWARNS
+    // CLEAR WARNS
     // ==================================================
 
     if (
@@ -1651,19 +2748,6 @@ client.on(
           "nombre"
         );
 
-      if (
-        !i.channel ||
-        !i.channel.isTextBased()
-      ) {
-
-        return i.reply({
-          content:
-            "❌ Salon invalide.",
-          ephemeral: true
-        });
-
-      }
-
       try {
 
         const deleted =
@@ -1674,7 +2758,7 @@ client.on(
 
         return i.reply({
           content:
-            `🧹 ${deleted.size} message(s) supprimé(s).`,
+            `🧹 **${deleted.size}** message(s) supprimé(s).`,
           ephemeral: true
         });
 
@@ -1712,7 +2796,7 @@ client.on(
         return i.reply(
           seconds === 0
             ? "✅ Slowmode désactivé."
-            : `🐢 Slowmode : **${seconds}s**.`
+            : `🐢 Slowmode réglé sur **${seconds}s**.`
         );
 
       } catch {
@@ -1839,7 +2923,7 @@ client.on(
         );
 
         return i.reply(
-          `✅ Pseudo modifié : **${nickname}**`
+          `✅ Pseudo de **${user.tag}** modifié.`
         );
 
       } catch {
@@ -1874,8 +2958,9 @@ client.on(
 
       const member =
         await i.guild.members
-          .fetch(user.id)
-          .catch(() => null);
+          .fetch(user.id
+        )
+        .catch(() => null);
 
       if (!member) {
 
@@ -1929,8 +3014,9 @@ client.on(
 
       const member =
         await i.guild.members
-          .fetch(user.id)
-          .catch(() => null);
+          .fetch(user.id
+        )
+        .catch(() => null);
 
       if (!member) {
 
@@ -1980,18 +3066,23 @@ client.on(
 
       const member =
         await i.guild.members
-          .fetch(user.id)
-          .catch(() => null);
+          .fetch(user.id
+        )
+        .catch(() => null);
 
       const embed =
         new EmbedBuilder()
+
           .setColor(0x5865F2)
+
           .setTitle(
             `👤 ${user.tag}`
           )
+
           .setThumbnail(
             user.displayAvatarURL()
           )
+
           .addFields(
 
             {
@@ -2012,7 +3103,9 @@ client.on(
             {
               name: "📅 Compte",
               value:
-                `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`,
+                `<t:${Math.floor(
+                  user.createdTimestamp / 1000
+                )}:R>`,
               inline: true
             },
 
@@ -2020,7 +3113,9 @@ client.on(
               name: "📥 Rejoint",
               value:
                 member?.joinedTimestamp
-                  ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`
+                  ? `<t:${Math.floor(
+                      member.joinedTimestamp / 1000
+                    )}:R>`
                   : "Inconnu",
               inline: true
             }
@@ -2046,13 +3141,17 @@ client.on(
 
       const embed =
         new EmbedBuilder()
+
           .setColor(0x5865F2)
+
           .setTitle(
             `🏠 ${guild.name}`
           )
+
           .setThumbnail(
             guild.iconURL()
           )
+
           .addFields(
 
             {
@@ -2135,17 +3234,22 @@ client.on(
 
       const embed =
         new EmbedBuilder()
+
           .setColor(0x5865F2)
+
           .setTitle(
             "📢 Annonce"
           )
+
           .setDescription(
             message
           )
+
           .setFooter({
             text:
               `Automod • ${i.user.tag}`
           })
+
           .setTimestamp();
 
       await i.reply({
@@ -2187,33 +3291,10 @@ client.on(
         saveData();
 
         return i.reply(
-          `✅ Les logs sont configurés dans ${channel}.`
+          `✅ Les logs sont maintenant envoyés dans ${channel}.`
         );
 
       }
-
-    }
-
-    // ==================================================
-    // AUTOMOD
-    // ==================================================
-
-    if (
-      i.commandName === "automod"
-    ) {
-
-      return i.reply({
-        embeds: [
-          createAutomodEmbed(
-            i.guild,
-            cfg
-          )
-        ],
-        components:
-          createAutomodButtons(
-            cfg
-          )
-      });
 
     }
 
@@ -2234,8 +3315,8 @@ client.on(
 
       return i.reply(
         cfg.antispam
-          ? "🟢 Anti-Spam activé."
-          : "🔴 Anti-Spam désactivé."
+          ? "🟢 **Anti-Spam activé.**"
+          : "🔴 **Anti-Spam désactivé.**"
       );
 
     }
@@ -2257,8 +3338,58 @@ client.on(
 
       return i.reply(
         cfg.antilink
-          ? "🟢 Anti-Liens activé."
-          : "🔴 Anti-Liens désactivé."
+          ? "🟢 **Anti-Liens activé.**"
+          : "🔴 **Anti-Liens désactivé.**"
+      );
+
+    }
+
+    // ==================================================
+    // ANTIBOT
+    // ==================================================
+
+    if (
+      i.commandName === "antibot"
+    ) {
+
+      cfg.antibot =
+        i.options.getBoolean(
+          "actif"
+        );
+
+      saveData();
+
+      return i.reply(
+        cfg.antibot
+          ? "🟢 **Anti-Bots activé.**"
+          : "🔴 **Anti-Bots désactivé.**"
+      );
+
+    }
+
+    // ==================================================
+    // ANTIRAID
+    // ==================================================
+
+    if (
+      i.commandName === "antiraid"
+    ) {
+
+      cfg.antiraid =
+        i.options.getBoolean(
+          "actif"
+        );
+
+      if (!cfg.antiraid) {
+        cfg.raidJoins = [];
+      }
+
+      saveData();
+
+      return i.reply(
+        cfg.antiraid
+          ? "🟢 **Anti-Raid activé.**\nAutomod surveille maintenant les arrivées rapides."
+          : "🔴 **Anti-Raid désactivé.**"
       );
 
     }
@@ -2280,8 +3411,8 @@ client.on(
 
       return i.reply(
         cfg.raidmode
-          ? "🚨 Mode Raid activé."
-          : "🟢 Mode Raid désactivé."
+          ? "🚨 **Mode Raid activé.**"
+          : "🟢 **Mode Raid désactivé.**"
       );
 
     }
@@ -2302,41 +3433,18 @@ client.on(
       cfg.lockdown =
         active;
 
-      let modified = 0;
-
-      for (
-        const channel
-        of i.guild.channels.cache.values()
-      ) {
-
-        if (
-          !channel.isTextBased()
-        ) continue;
-
-        try {
-
-          await channel.permissionOverwrites.edit(
-            i.guild.roles.everyone,
-            {
-              SendMessages:
-                active
-                  ? false
-                  : null
-            }
-          );
-
-          modified++;
-
-        } catch {}
-
-      }
+      const modified =
+        await setLockdown(
+          i.guild,
+          active
+        );
 
       saveData();
 
       return i.reply(
         active
-          ? `🔒 Lockdown activé sur ${modified} salon(s).`
-          : `🔓 Lockdown désactivé sur ${modified} salon(s).`
+          ? `🔒 **Lockdown activé** sur ${modified} salon(s).`
+          : `🔓 **Lockdown désactivé** sur ${modified} salon(s).`
       );
 
     }
@@ -2345,190 +3453,30 @@ client.on(
 );
 
 // ======================================================
-// EMBED AUTOMOD
-// ======================================================
-
-function createAutomodEmbed(
-  guild,
-  cfg
-) {
-
-  const state = value =>
-    value
-      ? "🟢 Activé"
-      : "🔴 Désactivé";
-
-  return new EmbedBuilder()
-
-    .setColor(0x5865F2)
-
-    .setTitle(
-      "🛡️ Automod • Centre de sécurité"
-    )
-
-    .setDescription(
-      `Protection de **${guild.name}**\n\n` +
-      "Utilise les boutons pour activer ou désactiver les protections."
-    )
-
-    .addFields(
-
-      {
-        name: "💬 Anti-Spam",
-        value:
-          state(cfg.antispam),
-        inline: true
-      },
-
-      {
-        name: "🔗 Anti-Liens",
-        value:
-          state(cfg.antilink),
-        inline: true
-      },
-
-      {
-        name: "🤖 Anti-Bots",
-        value:
-          state(cfg.antibot),
-        inline: true
-      },
-
-      {
-        name: "🚨 Mode Raid",
-        value:
-          state(cfg.raidmode),
-        inline: true
-      },
-
-      {
-        name: "🔒 Lockdown",
-        value:
-          state(cfg.lockdown),
-        inline: true
-      },
-
-      {
-        name: "📋 Logs",
-        value:
-          cfg.logChannel
-            ? `<#${cfg.logChannel}>`
-            : "❌ Non configurés",
-        inline: true
-      }
-
-    )
-
-    .setFooter({
-      text:
-        "Automod • Sécurité du serveur"
-    })
-
-    .setTimestamp();
-}
-
-// ======================================================
-// BOUTONS AUTOMOD
-// ======================================================
-
-function createAutomodButtons(cfg) {
-
-  return [
-
-    new ActionRowBuilder()
-      .addComponents(
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antispam"
-          )
-          .setLabel(
-            cfg.antispam
-              ? "Anti-Spam : ON"
-              : "Anti-Spam : OFF"
-          )
-          .setEmoji("💬")
-          .setStyle(
-            cfg.antispam
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antilink"
-          )
-          .setLabel(
-            cfg.antilink
-              ? "Anti-Liens : ON"
-              : "Anti-Liens : OFF"
-          )
-          .setEmoji("🔗")
-          .setStyle(
-            cfg.antilink
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antibot"
-          )
-          .setLabel(
-            cfg.antibot
-              ? "Anti-Bots : ON"
-              : "Anti-Bots : OFF"
-          )
-          .setEmoji("🤖")
-          .setStyle(
-            cfg.antibot
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          )
-
-      ),
-
-    new ActionRowBuilder()
-      .addComponents(
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_refresh"
-          )
-          .setLabel(
-            "Actualiser"
-          )
-          .setEmoji("🔄")
-          .setStyle(
-            ButtonStyle.Primary
-          )
-
-      )
-
-  ];
-}
-
-// ======================================================
 // ERREURS
 // ======================================================
 
 process.on(
   "unhandledRejection",
   error => {
+
     console.error(
       "❌ Unhandled Rejection:",
       error
     );
+
   }
 );
 
 process.on(
   "uncaughtException",
   error => {
+
     console.error(
       "❌ Uncaught Exception:",
       error
     );
+
   }
 );
 
@@ -2536,4 +3484,6 @@ process.on(
 // CONNEXION
 // ======================================================
 
-client.login(TOKEN);
+client.login(
+  TOKEN
+);

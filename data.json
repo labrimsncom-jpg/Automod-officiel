@@ -1,0 +1,164 @@
+{
+  "guilds": {
+    "1545092343886250085": {
+      "logChannel": "1545092347124125710",
+      "antibot": true,
+      "antispam": true,
+      "antilink": true,
+      "antilinkWarn": true,
+      "wordfilter": true,
+      "domains": [],
+      "exemptRoles": [],
+      "words": []
+    },
+    "1545422581362987078": {
+      "logChannel": "1549427424679297094",
+      "antibot": true,
+      "antispam": true,
+      "antilink": true,
+      "antilinkWarn": true,
+      "wordfilter": true,
+      "domains": [],
+      "exemptRoles": [],
+      "words": [],
+      "blockedWords": [
+        "fdp"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": 1,
+      "guildId": "1545422581362987078",
+      "userId": "437214298247397386",
+      "moderatorId": "1368642102615085106",
+      "type": "warn",
+      "reason": "Test",
+      "timestamp": 1790692907531
+    },
+    {
+      "id": 2,
+      "guildId": "1545422581362987078",
+      "userId": "437214298247397386",
+      "moderatorId": "1368642102615085106",
+      "type": "warn",
+      "reason": "Aucune raison",
+      "timestamp": 1790692926740
+    },
+    {
+      "id": 3,
+      "guildId": "1545422581362987078",
+      "userId": "437214298247397386",
+      "moderatorId": "1368642102615085106",
+      "type": "unwarn",
+      "reason": "2",
+      "timestamp": 1790692942826
+    },
+    {
+      "id": 4,
+      "guildId": "1545422581362987078",
+      "userId": "1368642102615085106",
+      "moderatorId": "1554497264737718272",
+      "type": "spam",
+      "reason": "Flood de 6 messages en 5s",
+      "timestamp": 1790693043364
+    },
+    {
+      "id": 5,
+      "guildId": "1545422581362987078",
+      "userId": "1368642102615085106",
+      "moderatorId": "1554497264737718272",
+      "type": "spam",
+      "reason": "Flood de 6 messages en 5s",
+      "timestamp": 1790693131779
+    }
+  ],
+  "nextCase": 6,
+  "1545422581362987078": {
+    "logsChannel": "1549427424679297094",
+    "automod": {
+      "antispam": true,
+      "antilink": true,
+      "wordfilter": true,
+      "antibot": true,
+      "antiinvite": false,
+      "anticaps": false,
+      "antirepeat": false,
+      "antiemoji": false,
+      "antimassmention": false,
+      "antieveryone": false,
+      "antiNewAccount": false,
+      "autoraid": false,
+      "autoSanction": false
+    },
+    "blockedWords": [
+      "fdp"
+    ],
+    "allowedDomains": [],
+    "exemptRoles": [],
+    "cases": [
+      {
+        "id": 1,
+        "userId": "1368642102615085106",
+        "moderatorId": "1554497264737718272",
+        "type": "wordfilter",
+        "reason": "Mot interdit : fdp",
+        "timestamp": 1790694533226
+      },
+      {
+        "id": 2,
+        "userId": "1368642102615085106",
+        "moderatorId": "1554497264737718272",
+        "type": "wordfilter",
+        "reason": "Mot interdit : fdp",
+        "timestamp": 1790694558388
+      },
+      {
+        "id": 3,
+        "createdAt": 1790696735482,
+        "type": "AutoMod • Anti-spam / Flood",
+        "userId": "1368642102615085106",
+        "moderatorId": "1554497264737718272",
+        "reason": "Flood de messages détecté : 6 messages en 5 secondes.",
+        "warnings": 1
+      },
+      {
+        "id": 4,
+        "createdAt": 1790696735772,
+        "type": "AutoMod • Anti-spam / Flood",
+        "userId": "1368642102615085106",
+        "moderatorId": "1554497264737718272",
+        "reason": "Flood de messages détecté : 7 messages en 5 secondes.",
+        "warnings": 2
+      },
+      {
+        "id": 5,
+        "createdAt": 1790696736066,
+        "type": "AutoMod • Anti-spam / Flood",
+        "userId": "1368642102615085106",
+        "moderatorId": "1554497264737718272",
+        "reason": "Flood de messages détecté : 8 messages en 5 secondes.",
+        "warnings": 3
+      }
+    ],
+    "warnings": {
+      "1368642102615085106": [
+        {
+          "reason": "Flood de messages détecté : 6 messages en 5 secondes.",
+          "moderatorId": "1554497264737718272",
+          "createdAt": 1790696735476
+        },
+        {
+          "reason": "Flood de messages détecté : 7 messages en 5 secondes.",
+          "moderatorId": "1554497264737718272",
+          "createdAt": 1790696735769
+        },
+        {
+          "reason": "Flood de messages détecté : 8 messages en 5 secondes.",
+          "moderatorId": "1554497264737718272",
+          "createdAt": 1790696736061
+        }
+      ]
+    }
+  }
+}

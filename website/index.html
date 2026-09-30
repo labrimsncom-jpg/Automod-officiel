@@ -1,0 +1,855 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="Automod - Bot Discord de modération et de sécurité."
+    >
+
+    <title>Automod — Bot Discord</title>
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family:
+                Inter,
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+
+            background:
+                radial-gradient(
+                    circle at 50% -10%,
+                    #292451 0%,
+                    #0b0d16 45%
+                ),
+                #0b0d16;
+
+            color: #f5f6ff;
+            line-height: 1.6;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        /* NAVBAR */
+
+        nav {
+            height: 76px;
+
+            max-width: 1150px;
+            margin: auto;
+
+            padding: 0 24px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            border-bottom:
+                1px solid rgba(255,255,255,.08);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+
+            font-size: 21px;
+            font-weight: 800;
+        }
+
+        .logo {
+            width: 42px;
+            height: 42px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            margin-right: 10px;
+
+            border-radius: 13px;
+
+            background: rgba(124,92,255,.15);
+
+            border:
+                1px solid rgba(124,92,255,.35);
+
+            font-size: 22px;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+
+            gap: 25px;
+
+            color: #a5abc0;
+
+            font-size: 14px;
+        }
+
+        .nav-links a:hover {
+            color: white;
+        }
+
+        .nav-button {
+            background: #7357f3;
+
+            color: white !important;
+
+            padding: 10px 17px;
+
+            border-radius: 10px;
+
+            transition: .2s;
+        }
+
+        .nav-button:hover {
+            transform: translateY(-2px);
+
+            background: #6348e8;
+        }
+
+        /* HERO */
+
+        .hero {
+            max-width: 1000px;
+
+            margin: auto;
+
+            padding:
+                115px 24px
+                90px;
+
+            text-align: center;
+        }
+
+        .badge {
+            display: inline-block;
+
+            padding: 7px 14px;
+
+            border-radius: 999px;
+
+            background:
+                rgba(124,92,255,.10);
+
+            border:
+                1px solid rgba(124,92,255,.35);
+
+            color: #c7bdff;
+
+            font-size: 12px;
+
+            font-weight: 800;
+
+            letter-spacing: .08em;
+        }
+
+        h1 {
+            margin: 27px 0;
+
+            font-size:
+                clamp(52px, 8vw, 90px);
+
+            line-height: 1;
+
+            letter-spacing: -5px;
+        }
+
+        h1 span {
+            color: #9b87ff;
+        }
+
+        .hero-text {
+            max-width: 700px;
+
+            margin: auto;
+
+            color: #a3a9bd;
+
+            font-size: 18px;
+        }
+
+        .buttons {
+            display: flex;
+
+            justify-content: center;
+
+            margin-top: 34px;
+        }
+
+        .button {
+            display: inline-block;
+
+            padding: 14px 23px;
+
+            border-radius: 12px;
+
+            font-weight: 800;
+
+            transition: .2s;
+        }
+
+        .primary {
+            background: #7357f3;
+
+            box-shadow:
+                0 10px 35px
+                rgba(115,87,243,.25);
+        }
+
+        .primary:hover {
+            transform: translateY(-3px);
+
+            background: #6348e8;
+
+            box-shadow:
+                0 14px 40px
+                rgba(115,87,243,.35);
+        }
+
+        /* STATS */
+
+        .stats {
+            display: flex;
+
+            justify-content: center;
+
+            gap: 80px;
+
+            margin-top: 60px;
+        }
+
+        .stat strong {
+            display: block;
+
+            font-size: 28px;
+        }
+
+        .stat span {
+            color: #777e95;
+
+            font-size: 13px;
+        }
+
+        /* SECTIONS */
+
+        .content {
+            max-width: 1100px;
+
+            margin: auto;
+
+            padding:
+                75px 24px;
+        }
+
+        .section-label {
+            color: #9b87ff;
+
+            font-size: 12px;
+
+            font-weight: 800;
+
+            letter-spacing: .15em;
+        }
+
+        h2 {
+            margin:
+                8px 0 35px;
+
+            font-size: 40px;
+
+            letter-spacing: -2px;
+        }
+
+        /* CARDS */
+
+        .features {
+            display: grid;
+
+            grid-template-columns:
+                repeat(4, 1fr);
+
+            gap: 16px;
+        }
+
+        .card {
+            min-height: 215px;
+
+            padding: 25px;
+
+            border-radius: 18px;
+
+            background:
+                linear-gradient(
+                    180deg,
+                    rgba(255,255,255,.05),
+                    rgba(255,255,255,.02)
+                );
+
+            border:
+                1px solid
+                rgba(255,255,255,.08);
+
+            transition: .2s;
+        }
+
+        .card:hover {
+            transform: translateY(-6px);
+
+            border-color:
+                rgba(124,92,255,.45);
+        }
+
+        .card-icon {
+            font-size: 31px;
+
+            margin-bottom: 20px;
+        }
+
+        .card h3 {
+            margin-bottom: 8px;
+
+            font-size: 18px;
+        }
+
+        .card p {
+            color: #969db3;
+
+            font-size: 14px;
+        }
+
+        /* COMMANDS */
+
+        .commands {
+            display: flex;
+
+            flex-wrap: wrap;
+
+            gap: 10px;
+        }
+
+        .command {
+            padding: 12px 15px;
+
+            border-radius: 10px;
+
+            background: #11141f;
+
+            border:
+                1px solid
+                rgba(255,255,255,.08);
+
+            color: #c8c0ff;
+
+            font-family: monospace;
+
+            transition: .2s;
+        }
+
+        .command:hover {
+            border-color:
+                rgba(124,92,255,.4);
+
+            transform: translateY(-2px);
+        }
+
+        /* CTA */
+
+        .cta {
+            max-width: 1050px;
+
+            margin:
+                50px auto
+                100px;
+
+            padding: 70px 24px;
+
+            text-align: center;
+
+            border-radius: 25px;
+
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(124,92,255,.22),
+                    rgba(255,255,255,.035)
+                );
+
+            border:
+                1px solid
+                rgba(124,92,255,.25);
+        }
+
+        .cta h2 {
+            margin-bottom: 10px;
+        }
+
+        .cta p {
+            color: #9da4ba;
+
+            margin-bottom: 28px;
+        }
+
+        /* FOOTER */
+
+        footer {
+            padding: 30px;
+
+            text-align: center;
+
+            color: #687086;
+
+            border-top:
+                1px solid
+                rgba(255,255,255,.08);
+        }
+
+        /* RESPONSIVE */
+
+        @media (max-width: 850px) {
+
+            .features {
+                grid-template-columns:
+                    repeat(2, 1fr);
+            }
+
+            .stats {
+                gap: 35px;
+            }
+        }
+
+        @media (max-width: 550px) {
+
+            .features {
+                grid-template-columns: 1fr;
+            }
+
+            .stats {
+                flex-wrap: wrap;
+            }
+
+            .nav-links a:not(.nav-button) {
+                display: none;
+            }
+
+            h1 {
+                letter-spacing: -3px;
+            }
+        }
+
+    </style>
+</head>
+
+
+<body>
+
+
+    <!-- NAVIGATION -->
+
+    <nav>
+
+        <div class="brand">
+
+            <div class="logo">
+                🛡️
+            </div>
+
+            Automod
+
+        </div>
+
+
+        <div class="nav-links">
+
+            <a href="#features">
+                Fonctionnalités
+            </a>
+
+            <a href="#commands">
+                Commandes
+            </a>
+
+            <a
+                class="nav-button"
+                href="https://discord.com/oauth2/authorize?client_id=1554497264737718272&permissions=8&integration_type=0&scope=bot+applications.commands"
+                target="_blank"
+            >
+                Ajouter Automod
+            </a>
+
+        </div>
+
+    </nav>
+
+
+
+    <!-- HERO -->
+
+    <header class="hero">
+
+        <div class="badge">
+            🛡️ MODÉRATION • SÉCURITÉ • AUTOMOD
+        </div>
+
+
+        <h1>
+
+            Ton serveur.
+            <br>
+
+            <span>Ta sécurité.</span>
+
+        </h1>
+
+
+        <p class="hero-text">
+
+            Automod est un bot Discord conçu pour
+            gérer la modération et renforcer la sécurité
+            de ton serveur grâce à des outils simples,
+            rapides et puissants.
+
+        </p>
+
+
+        <div class="buttons">
+
+            <a
+                class="button primary"
+                href="https://discord.com/oauth2/authorize?client_id=1554497264737718272&permissions=8&integration_type=0&scope=bot+applications.commands"
+                target="_blank"
+            >
+
+                ➕ Ajouter Automod
+
+            </a>
+
+        </div>
+
+
+        <div class="stats">
+
+            <div class="stat">
+
+                <strong>
+                    28+
+                </strong>
+
+                <span>
+                    commandes
+                </span>
+
+            </div>
+
+
+            <div class="stat">
+
+                <strong>
+                    3
+                </strong>
+
+                <span>
+                    protections AutoMod
+                </span>
+
+            </div>
+
+
+            <div class="stat">
+
+                <strong>
+                    24/7
+                </strong>
+
+                <span>
+                    disponible si hébergé
+                </span>
+
+            </div>
+
+        </div>
+
+    </header>
+
+
+
+    <!-- FONCTIONNALITÉS -->
+
+    <section
+        class="content"
+        id="features"
+    >
+
+        <div class="section-label">
+            FONCTIONNALITÉS
+        </div>
+
+
+        <h2>
+            Tout ce qu'il faut pour ton serveur.
+        </h2>
+
+
+        <div class="features">
+
+
+            <article class="card">
+
+                <div class="card-icon">
+                    🛡️
+                </div>
+
+                <h3>
+                    AutoMod
+                </h3>
+
+                <p>
+
+                    Anti-spam, anti-liens et
+                    anti-bots contrôlables
+                    directement depuis
+                    un panneau interactif.
+
+                </p>
+
+            </article>
+
+
+
+            <article class="card">
+
+                <div class="card-icon">
+                    🔨
+                </div>
+
+                <h3>
+                    Modération
+                </h3>
+
+                <p>
+
+                    Ban, kick, timeout,
+                    avertissements, nettoyage
+                    et gestion des rôles.
+
+                </p>
+
+            </article>
+
+
+
+            <article class="card">
+
+                <div class="card-icon">
+                    🚨
+                </div>
+
+                <h3>
+                    Sécurité
+                </h3>
+
+                <p>
+
+                    Mode raid, lockdown
+                    et journalisation
+                    des actions importantes.
+
+                </p>
+
+            </article>
+
+
+
+            <article class="card">
+
+                <div class="card-icon">
+                    ⚙️
+                </div>
+
+                <h3>
+                    Multi-serveurs
+                </h3>
+
+                <p>
+
+                    Chaque serveur possède
+                    sa propre configuration
+                    et ses propres paramètres.
+
+                </p>
+
+            </article>
+
+
+        </div>
+
+    </section>
+
+
+
+    <!-- COMMANDES -->
+
+    <section
+        class="content"
+        id="commands"
+    >
+
+        <div class="section-label">
+            COMMANDES
+        </div>
+
+
+        <h2>
+            Des outils simples et rapides.
+        </h2>
+
+
+        <div class="commands">
+
+            <div class="command">
+                /help
+            </div>
+
+            <div class="command">
+                /automod
+            </div>
+
+            <div class="command">
+                /ban
+            </div>
+
+            <div class="command">
+                /unban
+            </div>
+
+            <div class="command">
+                /kick
+            </div>
+
+            <div class="command">
+                /timeout
+            </div>
+
+            <div class="command">
+                /warn
+            </div>
+
+            <div class="command">
+                /casier
+            </div>
+
+            <div class="command">
+                /clear
+            </div>
+
+            <div class="command">
+                /purge
+            </div>
+
+            <div class="command">
+                /lock
+            </div>
+
+            <div class="command">
+                /unlock
+            </div>
+
+            <div class="command">
+                /slowmode
+            </div>
+
+            <div class="command">
+                /raidmode
+            </div>
+
+            <div class="command">
+                /lockdown
+            </div>
+
+            <div class="command">
+                /userinfo
+            </div>
+
+            <div class="command">
+                /serverinfo
+            </div>
+
+            <div class="command">
+                /setup
+            </div>
+
+        </div>
+
+    </section>
+
+
+
+    <!-- CTA -->
+
+    <section class="cta">
+
+        <h2>
+            Prêt à utiliser Automod ?
+        </h2>
+
+
+        <p>
+
+            Ajoute Automod à ton serveur
+            et commence à utiliser ses
+            outils de modération.
+
+        </p>
+
+
+        <a
+            class="button primary"
+            href="https://discord.com/oauth2/authorize?client_id=1554497264737718272&permissions=8&integration_type=0&scope=bot+applications.commands"
+            target="_blank"
+        >
+
+            ➕ Ajouter Automod
+
+        </a>
+
+    </section>
+
+
+
+    <!-- FOOTER -->
+
+    <footer>
+
+        © 2026 Automod • Bot Discord
+
+    </footer>
+
+
+</body>
+
+</html>

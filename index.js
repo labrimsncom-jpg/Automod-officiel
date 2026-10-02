@@ -1,4 +1,4 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 
 const {
   Client,
@@ -10,6 +10,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
   SlashCommandBuilder,
   ChannelType
 } = require("discord.js");
@@ -17,7 +18,7 @@ const {
 const fs = require("fs");
 
 // ======================================================
-// CONFIGURATION
+// AUTOMOD • CONFIG
 // ======================================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -42,10 +43,10 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent
   ],
-
   partials: [
     Partials.Channel,
     Partials.GuildMember,
@@ -55,10 +56,82 @@ const client = new Client({
 });
 
 // ======================================================
-// BASE DE DONNÉES
+// DATABASE
 // ======================================================
 
 const DATA_FILE = "./data.json";
+
+const DEFAULT_CONFIG = {
+  logs: {
+    moderation: null,
+    security: null,
+    automod: null,
+    members: null,
+    administration: null
+  },
+
+  protection: {
+    antispam: false,
+    antilinks: false,
+    antiinvites: false,
+    antibot: false,
+    antiraid: false,
+    antinuke: false,
+    antiwebhook: false,
+    antirole: false,
+    antichannel: false,
+    filter: false
+  },
+
+  raid: {
+    threshold: 5,
+    window: 10,
+    lockdown: false,
+    automatic: false
+  },
+
+  lockdown: false,
+
+  whitelist: {
+    users: [],
+    roles: [],
+    channels: []
+  },
+
+  exemptRoles: [],
+
+  allowedDomains: [
+    "discord.com",
+    "discord.gg",
+    "youtube.com",
+    "youtu.be",
+    "github.com"
+  ],
+
+  blockedWords: [],
+
+  ticket: {
+    category: null,
+    supportRole: null,
+    logs: null
+  },
+
+  warns: {},
+
+  stats: {
+    deletedMessages: 0,
+    warns: 0,
+    bans: 0,
+    kicks: 0,
+    timeouts: 0,
+    raids: 0,
+    nukeActions: 0
+  },
+
+  raidJoins: [],
+
+  securityActions: {}
+};
 
 let data = {
   guilds: {}
@@ -69,15 +142,39 @@ if (fs.existsSync(DATA_FILE)) {
     data = JSON.parse(
       fs.readFileSync(DATA_FILE, "utf8")
     );
-  } catch (error) {
-    console.error(
-      "⚠️ data.json invalide, création d'une nouvelle base."
-    );
-
-    data = {
-      guilds: {}
-    };
+  } catch {
+    data = { guilds: {} };
   }
+}
+
+function cloneDefault() {
+  return JSON.parse(
+    JSON.stringify(DEFAULT_CONFIG)
+  );
+}
+
+function getCfg(guildId) {
+  if (!data.guilds[guildId]) {
+    data.guilds[guildId] = cloneDefault();
+    saveData();
+  }
+
+  const cfg = data.guilds[guildId];
+
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    if (
+      typeof cfg[key] === "undefined"
+    ) {
+      cfg[key] =
+        JSON.parse(
+          JSON.stringify(
+            DEFAULT_CONFIG[key]
+          )
+        );
+    }
+  }
+
+  return cfg;
 }
 
 function saveData() {
@@ -89,271 +186,227 @@ function saveData() {
     );
   } catch (error) {
     console.error(
-      "❌ Erreur sauvegarde data.json :",
+      "❌ Erreur sauvegarde :",
       error
     );
   }
-}
-
-function getCfg(guildId) {
-
-  if (!data.guilds[guildId]) {
-
-    data.guilds[guildId] = {
-
-      logChannel: null,
-
-      antispam: false,
-      antilink: false,
-      antibot: false,
-      antiraid: false,
-
-      raidmode: false,
-      lockdown: false,
-
-      allowedDomains: [
-        "discord.com",
-        "discord.gg",
-        "youtube.com",
-        "youtu.be",
-        "github.com"
-      ],
-
-      exemptRoles: [],
-
-      warns: {},
-
-      raidJoins: [],
-
-      welcomeChannel: null
-
-    };
-
-    saveData();
-  }
-
-  const cfg = data.guilds[guildId];
-
-  // Compatibilité avec une ancienne data.json
-
-  if (!Array.isArray(cfg.allowedDomains)) {
-    cfg.allowedDomains = [
-      "discord.com",
-      "discord.gg",
-      "youtube.com",
-      "youtu.be",
-      "github.com"
-    ];
-  }
-
-  if (!Array.isArray(cfg.exemptRoles)) {
-    cfg.exemptRoles = [];
-  }
-
-  if (!cfg.warns) {
-    cfg.warns = {};
-  }
-
-  if (!Array.isArray(cfg.raidJoins)) {
-    cfg.raidJoins = [];
-  }
-
-  return cfg;
 }
 
 // ======================================================
 // VARIABLES
 // ======================================================
 
-const spamMap = new Map();
-
 let BOT_OWNER_ID = null;
+
+const spamMap = new Map();
+const securityMap = new Map();
 
 const URL_RE =
   /(https?:\/\/|www\.)[^\s]+/i;
 
+const INVITE_RE =
+  /(discord\.gg\/|discord\.com\/invite\/)/i;
+
 // ======================================================
-// OUTILS
+// UTILITAIRES
 // ======================================================
 
-function getWarns(guildId, userId) {
+function isWhitelisted(
+  guild,
+  userId,
+  channelId = null
+) {
+  const cfg = getCfg(guild.id);
 
-  const cfg = getCfg(guildId);
+  if (
+    userId === guild.ownerId
+  ) {
+    return true;
+  }
+
+  if (
+    cfg.whitelist.users.includes(
+      userId
+    )
+  ) {
+    return true;
+  }
+
+  const member =
+    guild.members.cache.get(
+      userId
+    );
+
+  if (
+    member &&
+    member.roles.cache.some(
+      role =>
+        cfg.whitelist.roles.includes(
+          role.id
+        )
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    channelId &&
+    cfg.whitelist.channels.includes(
+      channelId
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function canModerate(
+  moderator,
+  target
+) {
+  if (!moderator || !target) {
+    return false;
+  }
+
+  if (
+    target.id === moderator.id
+  ) {
+    return false;
+  }
+
+  if (
+    target.id ===
+    target.guild.ownerId
+  ) {
+    return false;
+  }
+
+  return (
+    moderator.roles.highest.position >
+    target.roles.highest.position
+  );
+}
+
+function getWarns(
+  guildId,
+  userId
+) {
+  const cfg =
+    getCfg(guildId);
 
   if (!cfg.warns[userId]) {
     cfg.warns[userId] = [];
-    saveData();
   }
 
   return cfg.warns[userId];
 }
 
-function canModerate(member, target) {
+async function sendLog(
+  guild,
+  type,
+  message
+) {
+  const cfg =
+    getCfg(guild.id);
 
-  if (!member || !target) {
-    return false;
-  }
+  const channelId =
+    cfg.logs[type] ||
+    cfg.logs.security;
 
-  if (target.id === member.id) {
-    return false;
-  }
-
-  if (target.id === member.guild.ownerId) {
-    return false;
-  }
-
-  if (
-    member.roles.highest.position <=
-    target.roles.highest.position
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
-async function sendLog(guild, content) {
-
-  const cfg = getCfg(guild.id);
-
-  if (!cfg.logChannel) {
+  if (!channelId) {
     return;
   }
 
   const channel =
     guild.channels.cache.get(
-      cfg.logChannel
+      channelId
     );
 
-  if (!channel) {
-    return;
-  }
-
-  if (!channel.isTextBased()) {
+  if (
+    !channel ||
+    !channel.isTextBased()
+  ) {
     return;
   }
 
   try {
-
     await channel.send({
-      content,
+      content: message,
       allowedMentions: {
         parse: []
       }
     });
-
   } catch {}
 }
 
-function getSendableChannel(guild) {
-
+function getBotChannel(guild) {
   if (
     guild.systemChannel &&
     guild.systemChannel.isTextBased()
   ) {
-
-    const permissions =
-      guild.systemChannel.permissionsFor(
-        client.user
-      );
-
-    if (
-      permissions?.has(
-        PermissionFlagsBits.SendMessages
-      )
-    ) {
-
-      return guild.systemChannel;
-
-    }
+    return guild.systemChannel;
   }
 
   return guild.channels.cache.find(
-    channel => {
-
-      if (!channel.isTextBased()) {
-        return false;
-      }
-
-      const permissions =
-        channel.permissionsFor(
-          client.user
-        );
-
-      return permissions?.has(
-        PermissionFlagsBits.SendMessages
-      );
-
-    }
+    channel =>
+      channel.isTextBased() &&
+      channel
+        .permissionsFor(client.user)
+        ?.has(
+          PermissionFlagsBits.SendMessages
+        )
   );
 }
 
 // ======================================================
-// PROPRIÉTAIRE D'AUTOMOD
+// OWNER AUTOMOD
 // ======================================================
 
-async function loadBotOwner() {
-
+async function loadOwner() {
   try {
-
     await client.application.fetch();
 
-    const owner =
-      client.application.owner;
-
-    if (owner) {
-
+    if (client.application.owner) {
       BOT_OWNER_ID =
-        owner.id;
-
-      console.log(
-        `👑 Owner Automod : ${1368642102615085106}`
-      );
-
+        client.application.owner.id;
     }
 
+    console.log(
+      `👑 Owner Automod : ${BOT_OWNER_ID || "inconnu"}`
+    );
   } catch (error) {
-
     console.error(
-      "❌ Impossible de récupérer le propriétaire d'Automod :",
+      "❌ Owner introuvable :",
       error
     );
-
   }
 }
 
 // ======================================================
-// STATUT
+// STATUS
 // ======================================================
 
-function updateBotStatus() {
-
-  if (!client.user) {
-    return;
-  }
+function updateStatus() {
+  if (!client.user) return;
 
   const count =
     client.guilds.cache.size;
 
-  const text =
-    `/help • ${count} serveur(s)`;
-
   client.user.setPresence({
-
     status: "online",
-
     activities: [
       {
         name: "Automod",
-        state: text,
+        state:
+          `/help • ${count} serveur(s)`,
         type: ActivityType.Custom
       }
     ]
-
   });
 
   console.log(
-    `📊 Statut : ${text}`
+    `📊 /help • ${count} serveur(s)`
   );
 }
 
@@ -363,500 +416,98 @@ function updateBotStatus() {
 
 const commands = [
 
-  // ----------------------------------------------------
-  // HELP
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
     .setName("help")
     .setDescription(
-      "Afficher les commandes d'Automod"
+      "Afficher l'aide d'Automod"
     ),
-
-  // ----------------------------------------------------
-  // MENU
-  // ----------------------------------------------------
 
   new SlashCommandBuilder()
     .setName("menu")
     .setDescription(
-      "Ouvrir le menu principal d'Automod"
+      "Ouvrir le menu Automod"
     ),
-
-  // ----------------------------------------------------
-  // AUTOMOD
-  // ----------------------------------------------------
 
   new SlashCommandBuilder()
     .setName("automod")
     .setDescription(
-      "Ouvrir le centre de protection Automod"
+      "Ouvrir le centre de sécurité Automod"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     ),
-
-  // ----------------------------------------------------
-  // SECURITY CONFIG
-  // ----------------------------------------------------
 
   new SlashCommandBuilder()
-    .setName("securityconfig")
+    .setName("stats")
     .setDescription(
-      "Configurer les protections de sécurité"
+      "Afficher les statistiques Automod"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     ),
-
-  // ----------------------------------------------------
-  // SERVER CONFIG
-  // ----------------------------------------------------
 
   new SlashCommandBuilder()
     .setName("serverconfig")
     .setDescription(
-      "Voir la configuration du serveur"
+      "Afficher la configuration"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     ),
 
-  // ----------------------------------------------------
-  // TICKET CONFIG
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("ticketconfig")
+    .setName("securityconfig")
     .setDescription(
-      "Voir la configuration du système de tickets"
+      "Configurer la sécurité"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     ),
 
-  // ----------------------------------------------------
-  // BAN
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("ban")
-    .setDescription("Bannir un membre")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre à bannir")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("raison")
-        .setDescription("Raison")
-        .setRequired(false)
-    ),
-
-  // ----------------------------------------------------
-  // UNBAN
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("unban")
-    .setDescription("Débannir un utilisateur")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(option =>
-      option
-        .setName("userid")
-        .setDescription("ID de l'utilisateur")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // KICK
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("kick")
-    .setDescription("Expulser un membre")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("raison")
-        .setDescription("Raison")
-        .setRequired(false)
-    ),
-
-  // ----------------------------------------------------
-  // TIMEOUT
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("timeout")
-    .setDescription("Mettre un membre en timeout")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("minutes")
-        .setDescription("Durée en minutes")
-        .setMinValue(1)
-        .setMaxValue(40320)
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("raison")
-        .setDescription("Raison")
-        .setRequired(false)
-    ),
-
-  // ----------------------------------------------------
-  // UNTIMEOUT
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("untimeout")
-    .setDescription("Retirer un timeout")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // WARN
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("warn")
-    .setDescription("Avertir un membre")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("raison")
-        .setDescription("Raison")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // UNWARN
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("unwarn")
-    .setDescription("Retirer un avertissement")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("numero")
-        .setDescription("Numéro du warn")
-        .setMinValue(1)
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // CASIER
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("casier")
-    .setDescription("Voir les avertissements")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // CLEAR WARNS
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("clearwarns")
+    .setName("whitelist")
     .setDescription(
-      "Supprimer tous les avertissements"
+      "Gérer la whitelist"
     )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // CLEAR
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("clear")
-    .setDescription("Supprimer des messages")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("nombre")
-        .setDescription("Nombre de messages")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // PURGE
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("purge")
-    .setDescription("Supprimer plusieurs messages")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("nombre")
-        .setDescription("Nombre")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // SLOWMODE
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("slowmode")
-    .setDescription("Configurer le slowmode")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addIntegerOption(option =>
-      option
-        .setName("secondes")
-        .setDescription("Durée")
-        .setMinValue(0)
-        .setMaxValue(21600)
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // LOCK
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("lock")
-    .setDescription("Verrouiller le salon")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    ),
-
-  // ----------------------------------------------------
-  // UNLOCK
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("unlock")
-    .setDescription("Déverrouiller le salon")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    ),
-
-  // ----------------------------------------------------
-  // NICK
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("nick")
-    .setDescription("Modifier le pseudo")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName("pseudo")
-        .setDescription("Nouveau pseudo")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // ROLE ADD
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("roleadd")
-    .setDescription("Ajouter un rôle")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addRoleOption(option =>
-      option
-        .setName("role")
-        .setDescription("Rôle")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // ROLE REMOVE
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("roleremove")
-    .setDescription("Retirer un rôle")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Membre")
-        .setRequired(true)
-    )
-    .addRoleOption(option =>
-      option
-        .setName("role")
-        .setDescription("Rôle")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // USERINFO
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("userinfo")
-    .setDescription(
-      "Informations sur un utilisateur"
-    )
-    .addUserOption(option =>
-      option
-        .setName("membre")
-        .setDescription("Utilisateur")
-        .setRequired(false)
-    ),
-
-  // ----------------------------------------------------
-  // SERVERINFO
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("serverinfo")
-    .setDescription(
-      "Informations sur le serveur"
-    ),
-
-  // ----------------------------------------------------
-  // SAY
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("say")
-    .setDescription("Faire parler Automod")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(option =>
-      option
-        .setName("message")
-        .setDescription("Message")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // ANNOUNCE
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("announce")
-    .setDescription("Créer une annonce")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(option =>
-      option
-        .setName("message")
-        .setDescription("Annonce")
-        .setRequired(true)
-    ),
-
-  // ----------------------------------------------------
-  // SETUP
-  // ----------------------------------------------------
-
-  new SlashCommandBuilder()
-    .setName("setup")
-    .setDescription("Configurer Automod")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
     .addSubcommand(sub =>
       sub
-        .setName("logs")
+        .setName("user")
         .setDescription(
-          "Configurer le salon des logs"
+          "Ajouter ou retirer un utilisateur"
+        )
+        .addUserOption(option =>
+          option
+            .setName("membre")
+            .setDescription("Utilisateur")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("role")
+        .setDescription(
+          "Ajouter ou retirer un rôle"
+        )
+        .addRoleOption(option =>
+          option
+            .setName("role")
+            .setDescription("Rôle")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("channel")
+        .setDescription(
+          "Ajouter ou retirer un salon"
         )
         .addChannelOption(option =>
           option
             .setName("salon")
-            .setDescription("Salon des logs")
+            .setDescription("Salon")
             .addChannelTypes(
               ChannelType.GuildText
             )
@@ -864,186 +515,745 @@ const commands = [
         )
     ),
 
-  // ----------------------------------------------------
-  // ANTISPAM
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("antispam")
-    .setDescription("Configurer l'anti-spam")
+    .setName("logs")
+    .setDescription(
+      "Configurer les logs"
+    )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
+    .addStringOption(option =>
       option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+        .setName("type")
+        .setDescription("Type de logs")
+        .setRequired(true)
+        .addChoices(
+          {
+            name: "Modération",
+            value: "moderation"
+          },
+          {
+            name: "Sécurité",
+            value: "security"
+          },
+          {
+            name: "AutoMod",
+            value: "automod"
+          },
+          {
+            name: "Membres",
+            value: "members"
+          },
+          {
+            name: "Administration",
+            value: "administration"
+          }
+        )
+    )
+    .addChannelOption(option =>
+      option
+        .setName("salon")
+        .setDescription("Salon")
+        .addChannelTypes(
+          ChannelType.GuildText
+        )
         .setRequired(true)
     ),
 
-  // ----------------------------------------------------
-  // ANTILINKS
-  // ----------------------------------------------------
+  new SlashCommandBuilder()
+    .setName("ticketconfig")
+    .setDescription(
+      "Configurer les tickets"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    ),
 
   new SlashCommandBuilder()
-    .setName("antilinks")
-    .setDescription("Configurer l'anti-liens")
+    .setName("ticket")
+    .setDescription(
+      "Créer un ticket"
+    ),
+
+  new SlashCommandBuilder()
+    .setName("ban")
+    .setDescription("Bannir un membre")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
-      option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("raison")
+        .setDescription("Raison")
+    ),
+
+  new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Expulser un membre")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("raison")
+        .setDescription("Raison")
+    ),
+
+  new SlashCommandBuilder()
+    .setName("timeout")
+    .setDescription("Timeout")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
+        .setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o
+        .setName("minutes")
+        .setDescription("Minutes")
+        .setMinValue(1)
+        .setMaxValue(40320)
         .setRequired(true)
     ),
 
-  // ----------------------------------------------------
-  // ANTIBOT
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("antibot")
-    .setDescription("Configurer l'anti-bots")
+    .setName("untimeout")
+    .setDescription(
+      "Retirer un timeout"
+    )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
-      option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
         .setRequired(true)
     ),
 
-  // ----------------------------------------------------
-  // ANTIRAID
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("antiraid")
-    .setDescription("Configurer l'anti-raid")
+    .setName("warn")
+    .setDescription("Avertir")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
-      option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("raison")
+        .setDescription("Raison")
         .setRequired(true)
     ),
 
-  // ----------------------------------------------------
-  // RAIDMODE
-  // ----------------------------------------------------
-
   new SlashCommandBuilder()
-    .setName("raidmode")
-    .setDescription("Activer le mode raid")
+    .setName("casier")
+    .setDescription(
+      "Voir le casier"
+    )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
-      option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Membre")
         .setRequired(true)
     ),
 
-  // ----------------------------------------------------
-  // LOCKDOWN
-  // ----------------------------------------------------
+  new SlashCommandBuilder()
+    .setName("clear")
+    .setDescription(
+      "Supprimer des messages"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageMessages
+    )
+    .addIntegerOption(o =>
+      o
+        .setName("nombre")
+        .setDescription("Nombre")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
-    .setName("lockdown")
-    .setDescription("Verrouiller tout le serveur")
+    .setName("slowmode")
+    .setDescription(
+      "Configurer le slowmode"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageChannels
+    )
+    .addIntegerOption(o =>
+      o
+        .setName("secondes")
+        .setDescription("Secondes")
+        .setMinValue(0)
+        .setMaxValue(21600)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("lock")
+    .setDescription(
+      "Verrouiller le salon"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageChannels
+    ),
+
+  new SlashCommandBuilder()
+    .setName("unlock")
+    .setDescription(
+      "Déverrouiller le salon"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageChannels
+    ),
+
+  new SlashCommandBuilder()
+    .setName("userinfo")
+    .setDescription(
+      "Informations utilisateur"
+    )
+    .addUserOption(o =>
+      o
+        .setName("membre")
+        .setDescription("Utilisateur")
+    ),
+
+  new SlashCommandBuilder()
+    .setName("serverinfo")
+    .setDescription(
+      "Informations serveur"
+    ),
+
+  new SlashCommandBuilder()
+    .setName("say")
+    .setDescription(
+      "Faire parler Automod"
+    )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addBooleanOption(option =>
-      option
-        .setName("actif")
-        .setDescription("Activer ou désactiver")
+    .addStringOption(o =>
+      o
+        .setName("message")
+        .setDescription("Message")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription(
+      "Créer une annonce"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(o =>
+      o
+        .setName("message")
+        .setDescription("Annonce")
         .setRequired(true)
     )
 
-].map(command => command.toJSON());
+].map(c => c.toJSON());
+
+// ======================================================
+// AUTOMOD EMBED
+// ======================================================
+
+function automodEmbed(
+  guild,
+  cfg,
+  page = "main"
+) {
+  const on =
+    value =>
+      value
+        ? "🟢 Activé"
+        : "🔴 Désactivé";
+
+  if (page === "security") {
+    return new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(
+        "🛡️ Automod • Sécurité"
+      )
+      .setDescription(
+        "Protection avancée de ton serveur."
+      )
+      .addFields(
+        {
+          name: "💥 Anti-Nuke",
+          value: on(
+            cfg.protection.antinuke
+          ),
+          inline: true
+        },
+        {
+          name: "🪝 Anti-Webhook",
+          value: on(
+            cfg.protection.antiwebhook
+          ),
+          inline: true
+        },
+        {
+          name: "🎭 Protection rôles",
+          value: on(
+            cfg.protection.antirole
+          ),
+          inline: true
+        },
+        {
+          name: "📁 Protection salons",
+          value: on(
+            cfg.protection.antichannel
+          ),
+          inline: true
+        },
+        {
+          name: "🚨 Anti-Raid",
+          value: on(
+            cfg.protection.antiraid
+          ),
+          inline: true
+        },
+        {
+          name: "🤖 Anti-Bots",
+          value: on(
+            cfg.protection.antibot
+          ),
+          inline: true
+        }
+      )
+      .setFooter({
+        text:
+          "Automod • Sécurité avancée"
+      })
+      .setTimestamp();
+  }
+
+  if (page === "moderation") {
+    return new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(
+        "🧹 Automod • Modération"
+      )
+      .setDescription(
+        "Protection automatique des messages et membres."
+      )
+      .addFields(
+        {
+          name: "💬 Anti-Spam",
+          value: on(
+            cfg.protection.antispam
+          ),
+          inline: true
+        },
+        {
+          name: "🔗 Anti-Liens",
+          value: on(
+            cfg.protection.antilinks
+          ),
+          inline: true
+        },
+        {
+          name: "📨 Anti-Invites",
+          value: on(
+            cfg.protection.antiinvites
+          ),
+          inline: true
+        },
+        {
+          name: "🤬 Filtre",
+          value: on(
+            cfg.protection.filter
+          ),
+          inline: true
+        },
+        {
+          name: "🚨 Anti-Raid",
+          value: on(
+            cfg.protection.antiraid
+          ),
+          inline: true
+        }
+      )
+      .setFooter({
+        text:
+          "Automod • Modération"
+      })
+      .setTimestamp();
+  }
+
+  return new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle(
+      "🛡️ Automod • Centre de protection"
+    )
+    .setDescription(
+      `Bienvenue dans le centre de sécurité de **${guild.name}**.\n\n` +
+      `Utilise les menus ci-dessous pour gérer chaque catégorie.`
+    )
+    .addFields(
+      {
+        name: "🧹 Modération",
+        value:
+          "Anti-Spam • Anti-Liens • Anti-Invites • Filtre",
+        inline: false
+      },
+      {
+        name: "🛡️ Sécurité",
+        value:
+          "Anti-Nuke • Anti-Webhooks • Protection rôles/salons",
+        inline: false
+      },
+      {
+        name: "🚨 Anti-Raid",
+        value:
+          `Seuil : **${cfg.raid.threshold}** arrivées / **${cfg.raid.window}s**`,
+        inline: false
+      },
+      {
+        name: "📋 Logs",
+        value:
+          cfg.logs.security
+            ? `<#${cfg.logs.security}>`
+            : "❌ Non configurés",
+        inline: false
+      }
+    )
+    .setFooter({
+      text:
+        "Automod • Protection intelligente"
+    })
+    .setTimestamp();
+}
+
+// ======================================================
+// AUTOMOD COMPONENTS
+// ======================================================
+
+function automodComponents(cfg) {
+  const menu =
+    new StringSelectMenuBuilder()
+      .setCustomId(
+        "automod_page"
+      )
+      .setPlaceholder(
+        "Choisir une catégorie"
+      )
+      .addOptions(
+        {
+          label: "Vue générale",
+          value: "main",
+          emoji: "🏠"
+        },
+        {
+          label: "Modération",
+          value: "moderation",
+          emoji: "🧹"
+        },
+        {
+          label: "Sécurité",
+          value: "security",
+          emoji: "🛡️"
+        }
+      );
+
+  const row1 =
+    new ActionRowBuilder()
+      .addComponents(menu);
+
+  const row2 =
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antispam"
+          )
+          .setLabel(
+            cfg.protection.antispam
+              ? "Anti-Spam ON"
+              : "Anti-Spam OFF"
+          )
+          .setEmoji("💬")
+          .setStyle(
+            cfg.protection.antispam
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antilinks"
+          )
+          .setLabel(
+            cfg.protection.antilinks
+              ? "Anti-Liens ON"
+              : "Anti-Liens OFF"
+          )
+          .setEmoji("🔗")
+          .setStyle(
+            cfg.protection.antilinks
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antiraid"
+          )
+          .setLabel(
+            cfg.protection.antiraid
+              ? "Anti-Raid ON"
+              : "Anti-Raid OFF"
+          )
+          .setEmoji("🚨")
+          .setStyle(
+            cfg.protection.antiraid
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          )
+
+      );
+
+  const row3 =
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antinuke"
+          )
+          .setLabel(
+            cfg.protection.antinuke
+              ? "Anti-Nuke ON"
+              : "Anti-Nuke OFF"
+          )
+          .setEmoji("💥")
+          .setStyle(
+            cfg.protection.antinuke
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antiwebhook"
+          )
+          .setLabel(
+            cfg.protection.antiwebhook
+              ? "Webhooks ON"
+              : "Webhooks OFF"
+          )
+          .setEmoji("🪝")
+          .setStyle(
+            cfg.protection.antiwebhook
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_antibot"
+          )
+          .setLabel(
+            cfg.protection.antibot
+              ? "Anti-Bots ON"
+              : "Anti-Bots OFF"
+          )
+          .setEmoji("🤖")
+          .setStyle(
+            cfg.protection.antibot
+              ? ButtonStyle.Success
+              : ButtonStyle.Secondary
+          )
+
+      );
+
+  const row4 =
+    new ActionRowBuilder()
+      .addComponents(
+
+        new ButtonBuilder()
+          .setCustomId(
+            "toggle_lockdown"
+          )
+          .setLabel(
+            cfg.lockdown
+              ? "Lockdown ON"
+              : "Lockdown OFF"
+          )
+          .setEmoji("🔒")
+          .setStyle(
+            cfg.lockdown
+              ? ButtonStyle.Danger
+              : ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            "automod_refresh"
+          )
+          .setLabel(
+            "Actualiser"
+          )
+          .setEmoji("🔄")
+          .setStyle(
+            ButtonStyle.Primary
+          )
+
+      );
+
+  return [
+    row1,
+    row2,
+    row3,
+    row4
+  ];
+}
+
+// ======================================================
+// LOCKDOWN
+// ======================================================
+
+async function lockdown(
+  guild,
+  active
+) {
+  let count = 0;
+
+  for (
+    const channel
+    of guild.channels.cache.values()
+  ) {
+    if (
+      channel.type !==
+      ChannelType.GuildText
+    ) {
+      continue;
+    }
+
+    try {
+      await channel.permissionOverwrites.edit(
+        guild.roles.everyone,
+        {
+          SendMessages:
+            active
+              ? false
+              : null
+        }
+      );
+
+      count++;
+    } catch {}
+  }
+
+  return count;
+}
 
 // ======================================================
 // READY
 // ======================================================
 
-client.once("ready", async () => {
+client.once(
+  "ready",
+  async () => {
 
-  console.log("");
-  console.log("======================================");
-  console.log("          🤖 AUTOMOD EN LIGNE");
-  console.log("======================================");
-
-  console.log(
-    `🤖 Bot : ${client.user.tag}`
-  );
-
-  console.log(
-    `🆔 ID : ${client.user.id}`
-  );
-
-  console.log(
-    `🌐 Serveurs : ${client.guilds.cache.size}`
-  );
-
-  console.log("");
-
-  await loadBotOwner();
-
-  updateBotStatus();
-
-  setInterval(
-    updateBotStatus,
-    5 * 60 * 1000
-  );
-
-  try {
-
-    if (GUILD_ID) {
-
-      const guild =
-        await client.guilds.fetch(
-          GUILD_ID
-        );
-
-      await guild.commands.set(
-        commands
-      );
-
-      console.log(
-        `✅ ${commands.length} commandes installées sur ${guild.name}`
-      );
-
-    } else {
-
-      await client.application.commands.set(
-        commands
-      );
-
-      console.log(
-        `✅ ${commands.length} commandes globales installées`
-      );
-
-    }
-
-  } catch (error) {
-
-    console.error(
-      "❌ Erreur déploiement commandes :",
-      error
+    console.log("");
+    console.log(
+      "======================================"
+    );
+    console.log(
+      "        🤖 AUTOMOD EN LIGNE"
+    );
+    console.log(
+      "======================================"
     );
 
-  }
+    console.log(
+      `🤖 ${client.user.tag}`
+    );
 
-});
+    console.log(
+      `🌐 ${client.guilds.cache.size} serveur(s)`
+    );
+
+    await loadOwner();
+
+    updateStatus();
+
+    setInterval(
+      updateStatus,
+      5 * 60 * 1000
+    );
+
+    try {
+
+      if (GUILD_ID) {
+
+        const guild =
+          await client.guilds.fetch(
+            GUILD_ID
+          );
+
+        await guild.commands.set(
+          commands
+        );
+
+        console.log(
+          `✅ ${commands.length} commandes installées sur ${guild.name}`
+        );
+
+      } else {
+
+        await client.application.commands.set(
+          commands
+        );
+
+        console.log(
+          `✅ ${commands.length} commandes globales installées`
+        );
+      }
+
+    } catch (error) {
+      console.error(
+        "❌ Déploiement commandes :",
+        error
+      );
+    }
+  }
+);
 
 // ======================================================
-// AUTOMOD REJOINT UN SERVEUR
+// BOT JOIN
 // ======================================================
 
 client.on(
@@ -1051,93 +1261,79 @@ client.on(
   async guild => {
 
     getCfg(guild.id);
-
     saveData();
 
     console.log(
-      `➕ Automod rejoint : ${guild.name}`
+      `➕ Automod rejoint ${guild.name}`
     );
 
-    updateBotStatus();
+    updateStatus();
 
     const channel =
-      getSendableChannel(guild);
+      getBotChannel(guild);
 
-    if (!channel) {
-      return;
-    }
+    if (!channel) return;
 
     const embed =
       new EmbedBuilder()
-
         .setColor(0x5865F2)
-
         .setTitle(
           "✨ Automod est arrivé"
         )
-
         .setDescription(
-          `Salut **${guild.name}** 👋\n\n` +
+          `Bienvenue sur **${guild.name}** 👋\n\n` +
           `Je suis **Automod**, votre bot de modération et de sécurité.\n\n` +
-          `### 🚀 Démarrage rapide\n` +
-          `• \`/menu\` — interface principale\n` +
-          `• \`/serverconfig\` — configuration du serveur\n` +
-          `• \`/securityconfig\` — protections\n` +
-          `• \`/automod\` — centre de sécurité\n\n` +
-          `✅ **Commandes slash installées sur ce serveur.**`
+          `🚀 **Commence avec :**\n` +
+          `• \`/automod\` — centre de protection\n` +
+          `• \`/menu\` — menu principal\n` +
+          `• \`/help\` — toutes les commandes`
         )
-
         .setFooter({
           text:
-            "Automod • Merci de votre confiance"
+            "Automod • Protection intelligente"
         })
-
         .setTimestamp();
 
     try {
-
       await channel.send({
         embeds: [embed]
       });
-
     } catch {}
-
   }
 );
 
 // ======================================================
-// AUTOMOD QUITTE UN SERVEUR
+// BOT LEAVE
 // ======================================================
 
 client.on(
   "guildDelete",
   guild => {
-
     console.log(
-      `➖ Automod quitte : ${guild.name}`
+      `➖ Automod quitte ${guild.name}`
     );
 
-    updateBotStatus();
-
+    updateStatus();
   }
 );
 
 // ======================================================
-// NOUVEAU MEMBRE
+// MEMBER JOIN
 // ======================================================
 
 client.on(
   "guildMemberAdd",
   async member => {
 
-    const cfg =
-      getCfg(
-        member.guild.id
-      );
+    const guild =
+      member.guild;
 
-    // ==================================================
-    // 👑 OWNER D'AUTOMOD
-    // ==================================================
+    const cfg =
+      getCfg(guild.id);
+
+    // --------------------------------------------------
+    // OWNER AUTOMOD
+    // --------------------------------------------------
 
     if (
       BOT_OWNER_ID &&
@@ -1145,276 +1341,278 @@ client.on(
     ) {
 
       const channel =
-        getSendableChannel(
-          member.guild
-        );
+        getBotChannel(guild);
 
       if (channel) {
 
-        const avatar =
-          member.user.displayAvatarURL({
-            extension: "png",
-            size: 256
-          });
-
         const embed =
           new EmbedBuilder()
-
             .setColor(0xF1C40F)
-
             .setTitle(
               "⚡ Le créateur d'Automod est là"
             )
-
             .setDescription(
-              `**${member.user.username}** — **Owner d'Automod** — vient de rejoindre **${member.guild.name}**.\n\n` +
+              `**${member.user.username}** — **Owner d'Automod** — vient de rejoindre **${guild.name}**.\n\n` +
               `> 🫡 **Accueil premium**`
             )
-
             .setThumbnail(
-              avatar
+              member.user.displayAvatarURL({
+                extension: "png",
+                size: 256
+              })
             )
-
             .setFooter({
               text:
                 "Automod • Accueil premium"
             })
-
             .setTimestamp();
 
         try {
-
           await channel.send({
             embeds: [embed]
           });
-
         } catch {}
-
       }
-
     }
 
-    // ==================================================
-    // 🤖 ANTI-BOT
-    // ==================================================
+    // --------------------------------------------------
+    // ANTI BOT
+    // --------------------------------------------------
 
     if (
-      cfg.antibot &&
-      member.user.bot
+      cfg.protection.antibot &&
+      member.user.bot &&
+      !isWhitelisted(
+        guild,
+        member.id
+      )
     ) {
 
       try {
-
         await member.kick(
           "Automod • Anti-Bot"
         );
 
         await sendLog(
-          member.guild,
-          `🤖 **Anti-Bot** : ${member.user.tag} a été expulsé.`
+          guild,
+          "security",
+          `🤖 **Anti-Bot** : ${member.user.tag} expulsé.`
         );
-
       } catch {}
 
       return;
     }
 
-    // ==================================================
-    // 🚨 ANTI-RAID
-    // ==================================================
+    // --------------------------------------------------
+    // ANTI RAID
+    // --------------------------------------------------
 
-    if (cfg.antiraid) {
+    if (
+      cfg.protection.antiraid
+    ) {
 
       const now =
         Date.now();
 
       cfg.raidJoins =
         cfg.raidJoins.filter(
-          timestamp =>
-            now - timestamp <
-            10000
+          time =>
+            now - time <
+            cfg.raid.window * 1000
         );
 
-      cfg.raidJoins.push(
-        now
-      );
+      cfg.raidJoins.push(now);
 
-      // 5 arrivées en 10 secondes
       if (
-        cfg.raidJoins.length >= 5 &&
-        !cfg.raidmode
+        cfg.raidJoins.length >=
+        cfg.raid.threshold
       ) {
 
-        cfg.raidmode = true;
+        if (!cfg.raidmode) {
+          cfg.raidmode = true;
+        }
 
-        saveData();
+        cfg.stats.raids++;
 
         await sendLog(
-          member.guild,
-          `🚨 **ANTI-RAID ACTIVÉ AUTOMATIQUEMENT**\n` +
-          `Automod a détecté plusieurs arrivées rapides sur **${member.guild.name}**.`
+          guild,
+          "security",
+          `🚨 **RAID DÉTECTÉ**\n${cfg.raidJoins.length} arrivées en ${cfg.raid.window}s.`
         );
 
+        if (
+          cfg.raid.automatic
+        ) {
+          await lockdown(
+            guild,
+            true
+          );
+
+          cfg.lockdown = true;
+        }
+
+        saveData();
       }
-
-      saveData();
-
     }
-
-    // ==================================================
-    // RAID MODE
-    // ==================================================
-
-    if (cfg.raidmode) {
-
-      await sendLog(
-        member.guild,
-        `🚨 **Mode Raid** : ${member.user.tag} vient de rejoindre le serveur.`
-      );
-
-    }
-
   }
 );
 
 // ======================================================
-// MESSAGES
+// MESSAGE AUTOMOD
 // ======================================================
 
 client.on(
   "messageCreate",
   async message => {
 
-    if (!message.guild) {
+    if (
+      !message.guild ||
+      message.author.bot
+    ) {
       return;
     }
 
-    if (message.author.bot) {
-      return;
-    }
+    const guild =
+      message.guild;
 
     const cfg =
-      getCfg(
-        message.guild.id
-      );
+      getCfg(guild.id);
 
-    // --------------------------------------------------
-    // RÔLES EXEMPTÉS
-    // --------------------------------------------------
+    if (
+      isWhitelisted(
+        guild,
+        message.author.id,
+        message.channel.id
+      )
+    ) {
+      return;
+    }
 
-    const exempt =
-      message.member?.roles?.cache?.some(
+    if (
+      message.member?.roles.cache.some(
         role =>
           cfg.exemptRoles.includes(
             role.id
           )
-      );
-
-    if (exempt) {
+      )
+    ) {
       return;
     }
 
     // --------------------------------------------------
-    // ANTI-SPAM
+    // ANTI SPAM
     // --------------------------------------------------
 
-    if (cfg.antispam) {
+    if (
+      cfg.protection.antispam
+    ) {
+
+      const key =
+        `${guild.id}:${message.author.id}`;
 
       const now =
         Date.now();
-
-      const key =
-        `${message.guild.id}:${message.author.id}`;
 
       let timestamps =
         spamMap.get(key) || [];
 
       timestamps =
         timestamps.filter(
-          timestamp =>
-            now - timestamp < 6000
+          time =>
+            now - time < 6000
         );
 
-      timestamps.push(
-        now
-      );
+      timestamps.push(now);
 
       spamMap.set(
         key,
         timestamps
       );
 
-      if (timestamps.length >= 5) {
+      if (
+        timestamps.length >= 5
+      ) {
 
-        spamMap.delete(
-          key
-        );
+        spamMap.delete(key);
 
         try {
           await message.delete();
         } catch {}
 
+        cfg.stats.deletedMessages++;
+
         await sendLog(
-          message.guild,
-          `💬 **Anti-Spam** : ${message.author.tag} a été détecté.`
+          guild,
+          "automod",
+          `💬 **Anti-Spam** : ${message.author.tag} détecté.`
         );
 
         try {
-
           if (
             message.member.moderatable
           ) {
-
             await message.member.timeout(
               10000,
               "Automod • Anti-Spam"
             );
-
           }
-
         } catch {}
+
+        saveData();
 
         return;
       }
-
     }
 
     // --------------------------------------------------
-    // ANTI-LIENS
+    // ANTI INVITE
     // --------------------------------------------------
 
     if (
-      cfg.antilink &&
-      URL_RE.test(
+      cfg.protection.antiinvites &&
+      INVITE_RE.test(
         message.content
       )
     ) {
 
-      const channelName =
-        message.channel.name?.toLowerCase() ||
-        "";
+      try {
+        await message.delete();
+      } catch {}
 
-      // Tickets exemptés
-      if (
-        channelName.includes(
-          "ticket"
-        )
-      ) {
-        return;
-      }
+      cfg.stats.deletedMessages++;
+
+      await sendLog(
+        guild,
+        "automod",
+        `📨 **Anti-Invite** : invitation supprimée de ${message.author.tag}.`
+      );
+
+      saveData();
+
+      return;
+    }
+
+    // --------------------------------------------------
+    // ANTI LIENS
+    // --------------------------------------------------
+
+    if (
+      cfg.protection.antilinks &&
+      URL_RE.test(
+        message.content
+      )
+    ) {
 
       const urls =
         message.content.match(
           /https?:\/\/[^\s]+/gi
         ) || [];
 
-      let allowed =
-        false;
+      let allowed = false;
 
       for (
         const url of urls
       ) {
-
         try {
 
           const hostname =
@@ -1435,14 +1633,11 @@ client.on(
                 )
             )
           ) {
-
             allowed = true;
             break;
-
           }
 
         } catch {}
-
       }
 
       if (!allowed) {
@@ -1451,288 +1646,91 @@ client.on(
           await message.delete();
         } catch {}
 
+        cfg.stats.deletedMessages++;
+
         await sendLog(
-          message.guild,
+          guild,
+          "automod",
           `🔗 **Anti-Liens** : lien supprimé de ${message.author.tag}.`
         );
 
-      }
+        saveData();
 
+        return;
+      }
     }
 
+    // --------------------------------------------------
+    // FILTRE
+    // --------------------------------------------------
+
+    if (
+      cfg.protection.filter &&
+      cfg.blockedWords.length
+    ) {
+
+      const content =
+        message.content.toLowerCase();
+
+      const blocked =
+        cfg.blockedWords.some(
+          word =>
+            content.includes(
+              word.toLowerCase()
+            )
+        );
+
+      if (blocked) {
+
+        try {
+          await message.delete();
+        } catch {}
+
+        cfg.stats.deletedMessages++;
+
+        await sendLog(
+          guild,
+          "automod",
+          `🤬 **Filtre** : message supprimé de ${message.author.tag}.`
+        );
+
+        saveData();
+
+        return;
+      }
+    }
   }
 );
 
 // ======================================================
-// EMBED AUTOMOD
+// SECURITY: WEBHOOK
 // ======================================================
 
-function createAutomodEmbed(
-  guild,
-  cfg
-) {
+client.on(
+  "webhookUpdate",
+  async channel => {
 
-  const status =
-    value =>
-      value
-        ? "🟢 Activé"
-        : "🔴 Désactivé";
+    const guild =
+      channel.guild;
 
-  const logs =
-    cfg.logChannel
-      ? `<#${cfg.logChannel}>`
-      : "❌ Non configurés";
+    if (!guild) return;
 
-  return new EmbedBuilder()
-
-    .setColor(0x5865F2)
-
-    .setTitle(
-      "🛡️ Automod • Centre de protection"
-    )
-
-    .setDescription(
-      `Bienvenue dans le centre de sécurité de **${guild.name}**.\n\n` +
-      `Gère les protections directement avec les boutons ci-dessous.`
-    )
-
-    .addFields(
-
-      {
-        name: "💬 Anti-Spam",
-        value:
-          status(cfg.antispam),
-        inline: true
-      },
-
-      {
-        name: "🔗 Anti-Liens",
-        value:
-          status(cfg.antilink),
-        inline: true
-      },
-
-      {
-        name: "🤖 Anti-Bots",
-        value:
-          status(cfg.antibot),
-        inline: true
-      },
-
-      {
-        name: "🚨 Anti-Raid",
-        value:
-          status(cfg.antiraid),
-        inline: true
-      },
-
-      {
-        name: "⚠️ Mode Raid",
-        value:
-          status(cfg.raidmode),
-        inline: true
-      },
-
-      {
-        name: "🔒 Lockdown",
-        value:
-          status(cfg.lockdown),
-        inline: true
-      },
-
-      {
-        name: "📋 Salon des logs",
-        value:
-          logs,
-        inline: false
-      }
-
-    )
-
-    .setFooter({
-      text:
-        "Automod • Protection intelligente"
-    })
-
-    .setTimestamp();
-
-}
-
-// ======================================================
-// BOUTONS AUTOMOD
-// ======================================================
-
-function createAutomodButtons(
-  cfg
-) {
-
-  return [
-
-    new ActionRowBuilder()
-      .addComponents(
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antispam"
-          )
-          .setLabel(
-            cfg.antispam
-              ? "Anti-Spam ON"
-              : "Anti-Spam OFF"
-          )
-          .setEmoji("💬")
-          .setStyle(
-            cfg.antispam
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antilink"
-          )
-          .setLabel(
-            cfg.antilink
-              ? "Anti-Liens ON"
-              : "Anti-Liens OFF"
-          )
-          .setEmoji("🔗")
-          .setStyle(
-            cfg.antilink
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antibot"
-          )
-          .setLabel(
-            cfg.antibot
-              ? "Anti-Bots ON"
-              : "Anti-Bots OFF"
-          )
-          .setEmoji("🤖")
-          .setStyle(
-            cfg.antibot
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_antiraid"
-          )
-          .setLabel(
-            cfg.antiraid
-              ? "Anti-Raid ON"
-              : "Anti-Raid OFF"
-          )
-          .setEmoji("🚨")
-          .setStyle(
-            cfg.antiraid
-              ? ButtonStyle.Success
-              : ButtonStyle.Secondary
-          )
-
-      ),
-
-    new ActionRowBuilder()
-      .addComponents(
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_lockdown"
-          )
-          .setLabel(
-            cfg.lockdown
-              ? "Lockdown ON"
-              : "Lockdown OFF"
-          )
-          .setEmoji("🔒")
-          .setStyle(
-            cfg.lockdown
-              ? ButtonStyle.Danger
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_raidmode"
-          )
-          .setLabel(
-            cfg.raidmode
-              ? "Raidmode ON"
-              : "Raidmode OFF"
-          )
-          .setEmoji("⚠️")
-          .setStyle(
-            cfg.raidmode
-              ? ButtonStyle.Danger
-              : ButtonStyle.Secondary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "automod_refresh"
-          )
-          .setLabel(
-            "Actualiser"
-          )
-          .setEmoji("🔄")
-          .setStyle(
-            ButtonStyle.Primary
-          )
-
-      )
-
-  ];
-
-}
-
-// ======================================================
-// LOCKDOWN
-// ======================================================
-
-async function setLockdown(
-  guild,
-  active
-) {
-
-  let modified =
-    0;
-
-  for (
-    const channel
-    of guild.channels.cache.values()
-  ) {
+    const cfg =
+      getCfg(guild.id);
 
     if (
-      !channel.isTextBased()
+      !cfg.protection.antiwebhook
     ) {
-      continue;
+      return;
     }
 
-    try {
-
-      await channel.permissionOverwrites.edit(
-        guild.roles.everyone,
-        {
-          SendMessages:
-            active
-              ? false
-              : null
-        }
-      );
-
-      modified++;
-
-    } catch {}
-
+    await sendLog(
+      guild,
+      "security",
+      `🪝 **Anti-Webhook** : modification détectée dans <#${channel.id}>.`
+    );
   }
-
-  return modified;
-}
+);
 
 // ======================================================
 // INTERACTIONS
@@ -1743,15 +1741,16 @@ client.on(
   async interaction => {
 
     // ==================================================
-    // BOUTONS
+    // SELECT MENU
     // ==================================================
 
     if (
-      interaction.isButton()
+      interaction.isStringSelectMenu()
     ) {
 
       if (
-        !interaction.guild
+        interaction.customId !==
+        "automod_page"
       ) {
         return;
       }
@@ -1761,13 +1760,11 @@ client.on(
           PermissionFlagsBits.ManageGuild
         )
       ) {
-
         return interaction.reply({
           content:
-            "❌ Permission **Gérer le serveur** requise.",
+            "❌ Permission insuffisante.",
           ephemeral: true
         });
-
       }
 
       const cfg =
@@ -1775,148 +1772,135 @@ client.on(
           interaction.guild.id
         );
 
-      // ------------------------------------------------
-      // REFRESH
-      // ------------------------------------------------
+      const page =
+        interaction.values[0];
+
+      return interaction.update({
+        embeds: [
+          automodEmbed(
+            interaction.guild,
+            cfg,
+            page
+          )
+        ],
+        components:
+          automodComponents(cfg)
+      });
+    }
+
+    // ==================================================
+    // BUTTONS
+    // ==================================================
+
+    if (
+      interaction.isButton()
+    ) {
 
       if (
-        interaction.customId ===
+        !interaction.memberPermissions?.has(
+          PermissionFlagsBits.ManageGuild
+        )
+      ) {
+        return interaction.reply({
+          content:
+            "❌ Permission **Gérer le serveur** requise.",
+          ephemeral: true
+        });
+      }
+
+      const cfg =
+        getCfg(
+          interaction.guild.id
+        );
+
+      const id =
+        interaction.customId;
+
+      if (
+        id ===
         "automod_refresh"
       ) {
-
         return interaction.update({
-
           embeds: [
-            createAutomodEmbed(
+            automodEmbed(
               interaction.guild,
               cfg
             )
           ],
-
           components:
-            createAutomodButtons(
-              cfg
-            )
-
+            automodComponents(cfg)
         });
-
       }
 
-      // ------------------------------------------------
-      // ANTISPAM
-      // ------------------------------------------------
+      const mapping = {
+        toggle_antispam:
+          "antispam",
+
+        toggle_antilinks:
+          "antilinks",
+
+        toggle_antiraid:
+          "antiraid",
+
+        toggle_antinuke:
+          "antinuke",
+
+        toggle_antiwebhook:
+          "antiwebhook",
+
+        toggle_antibot:
+          "antibot"
+      };
 
       if (
-        interaction.customId ===
-        "automod_antispam"
+        mapping[id]
       ) {
 
-        cfg.antispam =
-          !cfg.antispam;
+        const key =
+          mapping[id];
 
+        cfg.protection[key] =
+          !cfg.protection[key];
+
+        saveData();
+
+        await sendLog(
+          interaction.guild,
+          "security",
+          `⚙️ **Configuration** : ${key} ${cfg.protection[key] ? "activé" : "désactivé"} par ${interaction.user.tag}.`
+        );
       }
 
-      // ------------------------------------------------
-      // ANTILINK
-      // ------------------------------------------------
-
       if (
-        interaction.customId ===
-        "automod_antilink"
-      ) {
-
-        cfg.antilink =
-          !cfg.antilink;
-
-      }
-
-      // ------------------------------------------------
-      // ANTIBOT
-      // ------------------------------------------------
-
-      if (
-        interaction.customId ===
-        "automod_antibot"
-      ) {
-
-        cfg.antibot =
-          !cfg.antibot;
-
-      }
-
-      // ------------------------------------------------
-      // ANTIRAID
-      // ------------------------------------------------
-
-      if (
-        interaction.customId ===
-        "automod_antiraid"
-      ) {
-
-        cfg.antiraid =
-          !cfg.antiraid;
-
-        if (!cfg.antiraid) {
-          cfg.raidJoins = [];
-        }
-
-      }
-
-      // ------------------------------------------------
-      // RAIDMODE
-      // ------------------------------------------------
-
-      if (
-        interaction.customId ===
-        "automod_raidmode"
-      ) {
-
-        cfg.raidmode =
-          !cfg.raidmode;
-
-      }
-
-      // ------------------------------------------------
-      // LOCKDOWN
-      // ------------------------------------------------
-
-      if (
-        interaction.customId ===
-        "automod_lockdown"
+        id ===
+        "toggle_lockdown"
       ) {
 
         cfg.lockdown =
           !cfg.lockdown;
 
-        await setLockdown(
+        await lockdown(
           interaction.guild,
           cfg.lockdown
         );
 
+        saveData();
       }
 
-      saveData();
-
       return interaction.update({
-
         embeds: [
-          createAutomodEmbed(
+          automodEmbed(
             interaction.guild,
             cfg
           )
         ],
-
         components:
-          createAutomodButtons(
-            cfg
-          )
-
+          automodComponents(cfg)
       });
-
     }
 
     // ==================================================
-    // SLASH COMMAND
+    // SLASH
     // ==================================================
 
     if (
@@ -1928,9 +1912,9 @@ client.on(
     const i =
       interaction;
 
-    // ==================================================
+    // --------------------------------------------------
     // HELP
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "help"
@@ -1938,92 +1922,65 @@ client.on(
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
             "🤖 Automod • Centre d'aide"
           )
-
           .setDescription(
-            "Bienvenue sur **Automod**, votre bot de modération et de sécurité."
+            "Bot Discord de modération, sécurité et protection."
           )
-
           .addFields(
-
             {
               name: "🛡️ Sécurité",
               value:
-                "`/automod` `/securityconfig` `/antispam` `/antilinks` `/antibot` `/antiraid` `/raidmode` `/lockdown`"
+                "`/automod` `/securityconfig` `/whitelist` `/logs`"
             },
-
             {
-              name: "🔨 Modération",
+              name: "🚨 Protection",
               value:
-                "`/ban` `/unban` `/kick` `/timeout` `/untimeout`"
+                "Anti-Nuke • Anti-Raid • Anti-Webhooks • Anti-Bots • Protection rôles/salons"
             },
-
             {
-              name: "⚠️ Avertissements",
+              name: "🧹 Modération",
               value:
-                "`/warn` `/unwarn` `/casier` `/clearwarns`"
+                "`/ban` `/kick` `/timeout` `/untimeout` `/warn` `/casier` `/clear` `/slowmode`"
             },
-
             {
-              name: "🧹 Nettoyage",
+              name: "🎫 Tickets",
               value:
-                "`/clear` `/purge` `/slowmode` `/lock` `/unlock`"
+                "`/ticket` `/ticketconfig`"
             },
-
-            {
-              name: "⚙️ Configuration",
-              value:
-                "`/menu` `/serverconfig` `/ticketconfig` `/setup`"
-            },
-
             {
               name: "📊 Informations",
               value:
-                "`/userinfo` `/serverinfo`"
-            },
-
-            {
-              name: "📢 Utilitaires",
-              value:
-                "`/say` `/announce`"
+                "`/stats` `/userinfo` `/serverinfo`"
             }
-
           )
-
           .setFooter({
             text:
               `Automod • ${client.guilds.cache.size} serveur(s)`
           })
-
           .setTimestamp();
 
       return i.reply({
         embeds: [embed]
       });
-
     }
 
-    // ==================================================
-    // PERMISSIONS
-    // ==================================================
+    // --------------------------------------------------
+    // BASIC PERMISSION
+    // --------------------------------------------------
 
     if (
       !i.memberPermissions?.has(
         PermissionFlagsBits.ManageGuild
       )
     ) {
-
       return i.reply({
         content:
           "❌ Tu dois avoir la permission **Gérer le serveur**.",
         ephemeral: true
       });
-
     }
 
     const cfg =
@@ -2031,9 +1988,9 @@ client.on(
         i.guild.id
       );
 
-    // ==================================================
+    // --------------------------------------------------
     // MENU
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "menu"
@@ -2041,229 +1998,526 @@ client.on(
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
             "✨ Automod • Menu principal"
           )
-
           .setDescription(
-            `Bienvenue dans le panneau de gestion d'**Automod**.\n\n` +
-            `🛡️ **Sécurité**\n` +
-            `Gère les protections de ton serveur.\n\n` +
-            `⚙️ **Configuration**\n` +
-            `Configure les logs et les paramètres.\n\n` +
-            `🎫 **Tickets**\n` +
-            `Accède à la configuration du système de tickets.\n\n` +
-            `Utilise les commandes ci-dessous pour accéder à chaque section.`
+            "Centre de contrôle de ton serveur."
           )
-
           .addFields(
             {
               name: "🛡️ Sécurité",
               value:
-                "`/automod` ou `/securityconfig`"
+                "`/automod`"
             },
             {
-              name: "⚙️ Serveur",
+              name: "📊 Statistiques",
               value:
-                "`/serverconfig`"
+                "`/stats`"
             },
             {
               name: "🎫 Tickets",
               value:
-                "`/ticketconfig`"
+                "`/ticket` `/ticketconfig`"
+            },
+            {
+              name: "⚙️ Configuration",
+              value:
+                "`/logs` `/whitelist` `/serverconfig`"
             }
           )
-
           .setFooter({
             text:
-              "Automod • Menu principal"
+              "Automod • Menu"
           })
-
           .setTimestamp();
 
       return i.reply({
         embeds: [embed]
       });
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // AUTOMOD
-    // ==================================================
+    // --------------------------------------------------
 
     if (
-      i.commandName === "automod" ||
-      i.commandName === "securityconfig"
+      i.commandName === "automod"
     ) {
 
       return i.reply({
-
         embeds: [
-          createAutomodEmbed(
+          automodEmbed(
             i.guild,
             cfg
           )
         ],
-
         components:
-          createAutomodButtons(
-            cfg
-          )
-
+          automodComponents(cfg)
       });
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
+    // SECURITY CONFIG
+    // --------------------------------------------------
+
+    if (
+      i.commandName === "securityconfig"
+    ) {
+
+      return i.reply({
+        embeds: [
+          automodEmbed(
+            i.guild,
+            cfg,
+            "security"
+          )
+        ],
+        components:
+          automodComponents(cfg)
+      });
+    }
+
+    // --------------------------------------------------
+    // STATS
+    // --------------------------------------------------
+
+    if (
+      i.commandName === "stats"
+    ) {
+
+      const s =
+        cfg.stats;
+
+      const embed =
+        new EmbedBuilder()
+          .setColor(0x5865F2)
+          .setTitle(
+            "📊 Automod • Statistiques"
+          )
+          .addFields(
+            {
+              name: "🏠 Serveur",
+              value:
+                i.guild.name,
+              inline: true
+            },
+            {
+              name: "👥 Membres",
+              value:
+                `${i.guild.memberCount}`,
+              inline: true
+            },
+            {
+              name: "🧹 Messages supprimés",
+              value:
+                `${s.deletedMessages}`,
+              inline: true
+            },
+            {
+              name: "⚠️ Warns",
+              value:
+                `${s.warns}`,
+              inline: true
+            },
+            {
+              name: "🔨 Bans",
+              value:
+                `${s.bans}`,
+              inline: true
+            },
+            {
+              name: "👢 Kicks",
+              value:
+                `${s.kicks}`,
+              inline: true
+            },
+            {
+              name: "🚨 Raids",
+              value:
+                `${s.raids}`,
+              inline: true
+            },
+            {
+              name: "💥 Actions Anti-Nuke",
+              value:
+                `${s.nukeActions}`,
+              inline: true
+            }
+          )
+          .setFooter({
+            text:
+              "Automod • Statistiques"
+          })
+          .setTimestamp();
+
+      return i.reply({
+        embeds: [embed]
+      });
+    }
+
+    // --------------------------------------------------
     // SERVER CONFIG
-    // ==================================================
+    // --------------------------------------------------
 
     if (
-      i.commandName === "serverconfig"
+      i.commandName ===
+      "serverconfig"
     ) {
 
-      const embed =
-        new EmbedBuilder()
-
-          .setColor(0x5865F2)
-
-          .setTitle(
-            "⚙️ Automod • Configuration serveur"
-          )
-
-          .setDescription(
-            "Configuration actuelle du serveur."
-          )
-
-          .addFields(
-
-            {
-              name: "📋 Logs",
-              value:
-                cfg.logChannel
-                  ? `<#${cfg.logChannel}>`
-                  : "❌ Non configurés",
-              inline: true
-            },
-
-            {
-              name: "💬 Anti-Spam",
-              value:
-                cfg.antispam
-                  ? "🟢 Activé"
-                  : "🔴 Désactivé",
-              inline: true
-            },
-
-            {
-              name: "🔗 Anti-Liens",
-              value:
-                cfg.antilink
-                  ? "🟢 Activé"
-                  : "🔴 Désactivé",
-              inline: true
-            },
-
-            {
-              name: "🤖 Anti-Bots",
-              value:
-                cfg.antibot
-                  ? "🟢 Activé"
-                  : "🔴 Désactivé",
-              inline: true
-            },
-
-            {
-              name: "🚨 Anti-Raid",
-              value:
-                cfg.antiraid
-                  ? "🟢 Activé"
-                  : "🔴 Désactivé",
-              inline: true
-            },
-
-            {
-              name: "🔒 Lockdown",
-              value:
-                cfg.lockdown
-                  ? "🟢 Activé"
-                  : "🔴 Désactivé",
-              inline: true
-            }
-
-          )
-
-          .setFooter({
-            text:
-              "Automod • Configuration"
-          })
-
-          .setTimestamp();
-
       return i.reply({
-        embeds: [embed]
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(
+              "⚙️ Automod • Configuration"
+            )
+            .addFields(
+              {
+                name: "🛡️ Protections",
+                value:
+                  Object.entries(
+                    cfg.protection
+                  )
+                    .map(
+                      ([key, value]) =>
+                        `${value ? "🟢" : "🔴"} ${key}`
+                    )
+                    .join("\n")
+              },
+              {
+                name: "📋 Logs",
+                value:
+                  Object.entries(
+                    cfg.logs
+                  )
+                    .map(
+                      ([key, value]) =>
+                        `${key}: ${value ? `<#${value}>` : "❌"}`
+                    )
+                    .join("\n")
+              }
+            )
+            .setTimestamp()
+        ]
       });
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
+    // LOGS
+    // --------------------------------------------------
+
+    if (
+      i.commandName === "logs"
+    ) {
+
+      const type =
+        i.options.getString(
+          "type"
+        );
+
+      const channel =
+        i.options.getChannel(
+          "salon"
+        );
+
+      cfg.logs[type] =
+        channel.id;
+
+      saveData();
+
+      return i.reply(
+        `✅ Logs **${type}** configurés dans ${channel}.`
+      );
+    }
+
+    // --------------------------------------------------
+    // WHITELIST
+    // --------------------------------------------------
+
+    if (
+      i.commandName === "whitelist"
+    ) {
+
+      const sub =
+        i.options.getSubcommand();
+
+      if (
+        sub === "user"
+      ) {
+
+        const user =
+          i.options.getUser(
+            "membre"
+          );
+
+        const list =
+          cfg.whitelist.users;
+
+        const index =
+          list.indexOf(
+            user.id
+          );
+
+        if (index >= 0) {
+          list.splice(index, 1);
+
+          saveData();
+
+          return i.reply(
+            `🗑️ **${user.tag}** retiré de la whitelist.`
+          );
+        }
+
+        list.push(
+          user.id
+        );
+
+        saveData();
+
+        return i.reply(
+          `✅ **${user.tag}** ajouté à la whitelist.`
+        );
+      }
+
+      if (
+        sub === "role"
+      ) {
+
+        const role =
+          i.options.getRole(
+            "role"
+          );
+
+        const list =
+          cfg.whitelist.roles;
+
+        const index =
+          list.indexOf(
+            role.id
+          );
+
+        if (index >= 0) {
+          list.splice(index, 1);
+
+          saveData();
+
+          return i.reply(
+            `🗑️ ${role} retiré de la whitelist.`
+          );
+        }
+
+        list.push(
+          role.id
+        );
+
+        saveData();
+
+        return i.reply(
+          `✅ ${role} ajouté à la whitelist.`
+        );
+      }
+
+      if (
+        sub === "channel"
+      ) {
+
+        const channel =
+          i.options.getChannel(
+            "salon"
+          );
+
+        const list =
+          cfg.whitelist.channels;
+
+        const index =
+          list.indexOf(
+            channel.id
+          );
+
+        if (index >= 0) {
+          list.splice(index, 1);
+
+          saveData();
+
+          return i.reply(
+            `🗑️ ${channel} retiré de la whitelist.`
+          );
+        }
+
+        list.push(
+          channel.id
+        );
+
+        saveData();
+
+        return i.reply(
+          `✅ ${channel} ajouté à la whitelist.`
+        );
+      }
+    }
+
+    // --------------------------------------------------
     // TICKET CONFIG
-    // ==================================================
+    // --------------------------------------------------
 
     if (
-      i.commandName === "ticketconfig"
+      i.commandName ===
+      "ticketconfig"
     ) {
+
+      cfg.ticket.category =
+        cfg.ticket.category ||
+        null;
+
+      return i.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(
+              "🎫 Automod • Tickets"
+            )
+            .setDescription(
+              "Le système de tickets est prêt à être configuré."
+            )
+            .addFields(
+              {
+                name: "📁 Catégorie",
+                value:
+                  cfg.ticket.category
+                    ? `<#${cfg.ticket.category}>`
+                    : "❌ Non configurée"
+              },
+              {
+                name: "👥 Support",
+                value:
+                  cfg.ticket.supportRole
+                    ? `<@&${cfg.ticket.supportRole}>`
+                    : "❌ Non configuré"
+              },
+              {
+                name: "📋 Logs",
+                value:
+                  cfg.ticket.logs
+                    ? `<#${cfg.ticket.logs}>`
+                    : "❌ Non configurés"
+              }
+            )
+            .setFooter({
+              text:
+                "Automod • Ticket System"
+            })
+            .setTimestamp()
+        ]
+      });
+    }
+
+    // --------------------------------------------------
+    // TICKET
+    // --------------------------------------------------
+
+    if (
+      i.commandName === "ticket"
+    ) {
+
+      const existing =
+        i.guild.channels.cache.find(
+          channel =>
+            channel.name ===
+            `ticket-${i.user.username.toLowerCase()}`
+        );
+
+      if (existing) {
+        return i.reply({
+          content:
+            `🎫 Tu as déjà un ticket : ${existing}`,
+          ephemeral: true
+        });
+      }
+
+      const channel =
+        await i.guild.channels.create({
+          name:
+            `ticket-${i.user.username}`
+              .toLowerCase()
+              .replace(
+                /[^a-z0-9-]/g,
+                ""
+              )
+              .slice(0, 80),
+
+          type:
+            ChannelType.GuildText,
+
+          parent:
+            cfg.ticket.category || undefined,
+
+          permissionOverwrites: [
+            {
+              id:
+                i.guild.roles.everyone.id,
+              deny: [
+                PermissionFlagsBits.ViewChannel
+              ]
+            },
+            {
+              id:
+                i.user.id,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages
+              ]
+            }
+          ]
+        });
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
-            "🎫 Automod • Ticket Config"
+            "🎫 Ticket ouvert"
           )
-
           .setDescription(
-            "Configuration du système de tickets."
+            `Bienvenue ${i.user}.\n\n` +
+            `Explique ton problème ici.\n\n` +
+            `Un membre du staff pourra prendre en charge ton ticket.`
           )
-
-          .addFields(
-
-            {
-              name: "🎫 Système",
-              value:
-                "⚙️ Configuration disponible"
-            },
-
-            {
-              name: "📋 Logs",
-              value:
-                cfg.logChannel
-                  ? `<#${cfg.logChannel}>`
-                  : "❌ Non configurés"
-            }
-
-          )
-
-          .setFooter({
-            text:
-              "Automod • Ticket System"
-          })
-
           .setTimestamp();
 
-      return i.reply({
-        embeds: [embed]
+      const row =
+        new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(
+                "ticket_close"
+              )
+              .setLabel(
+                "Fermer"
+              )
+              .setEmoji("🔒")
+              .setStyle(
+                ButtonStyle.Danger
+              )
+          );
+
+      await channel.send({
+        content:
+          `${i.user}`,
+        embeds: [embed],
+        components: [row]
       });
 
+      return i.reply({
+        content:
+          `🎫 Ticket créé : ${channel}`,
+        ephemeral: true
+      });
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // BAN
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "ban"
@@ -2292,84 +2546,46 @@ client.on(
           member
         )
       ) {
-
         return i.reply({
           content:
             "❌ Tu ne peux pas bannir ce membre.",
           ephemeral: true
         });
-
       }
 
       try {
 
         await i.guild.members.ban(
           user.id,
-          {
-            reason
-          }
+          { reason }
         );
 
-        await i.reply(
-          `🔨 **${user.tag}** a été banni.\n> ${reason}`
-        );
+        cfg.stats.bans++;
+
+        saveData();
 
         await sendLog(
           i.guild,
-          `🔨 **BAN** — ${user.tag}\nRaison : ${reason}`
+          "moderation",
+          `🔨 **BAN** ${user.tag}\nRaison : ${reason}`
+        );
+
+        return i.reply(
+          `🔨 **${user.tag}** a été banni.`
         );
 
       } catch {
-
-        await i.reply({
+        return i.reply({
           content:
             "❌ Impossible de bannir ce membre.",
           ephemeral: true
         });
-
       }
-
-      return;
     }
 
-    // ==================================================
-    // UNBAN
-    // ==================================================
-
-    if (
-      i.commandName === "unban"
-    ) {
-
-      const userId =
-        i.options.getString(
-          "userid"
-        );
-
-      try {
-
-        await i.guild.members.unban(
-          userId
-        );
-
-        return i.reply(
-          `✅ **${userId}** a été débanni.`
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible de débannir cet utilisateur.",
-          ephemeral: true
-        });
-
-      }
-
-    }
-
-    // ==================================================
+    // --------------------------------------------------
     // KICK
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "kick"
@@ -2398,13 +2614,11 @@ client.on(
           member
         )
       ) {
-
         return i.reply({
           content:
             "❌ Tu ne peux pas expulser ce membre.",
           ephemeral: true
         });
-
       }
 
       try {
@@ -2413,25 +2627,26 @@ client.on(
           reason
         );
 
+        cfg.stats.kicks++;
+
+        saveData();
+
         return i.reply(
-          `👢 **${user.tag}** a été expulsé.\n> ${reason}`
+          `👢 **${user.tag}** a été expulsé.`
         );
 
       } catch {
-
         return i.reply({
           content:
-            "❌ Impossible d'expulser ce membre.",
+            "❌ Impossible d'expulser.",
           ephemeral: true
         });
-
       }
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // TIMEOUT
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "timeout"
@@ -2447,12 +2662,6 @@ client.on(
           "minutes"
         );
 
-      const reason =
-        i.options.getString(
-          "raison"
-        ) ||
-        "Aucune raison";
-
       const member =
         await i.guild.members
           .fetch(user.id)
@@ -2465,41 +2674,40 @@ client.on(
           member
         )
       ) {
-
         return i.reply({
           content:
             "❌ Tu ne peux pas timeout ce membre.",
           ephemeral: true
         });
-
       }
 
       try {
 
         await member.timeout(
-          minutes * 60 * 1000,
-          reason
+          minutes * 60000,
+          "Automod"
         );
 
+        cfg.stats.timeouts++;
+
+        saveData();
+
         return i.reply(
-          `⏱️ **${user.tag}** est en timeout pendant **${minutes} minute(s)**.`
+          `⏱️ **${user.tag}** timeout pendant **${minutes} minute(s)**.`
         );
 
       } catch {
-
         return i.reply({
           content:
             "❌ Impossible d'appliquer le timeout.",
           ephemeral: true
         });
-
       }
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // UNTIMEOUT
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "untimeout"
@@ -2522,13 +2730,11 @@ client.on(
           member
         )
       ) {
-
         return i.reply({
           content:
             "❌ Tu ne peux pas modifier ce membre.",
           ephemeral: true
         });
-
       }
 
       try {
@@ -2543,20 +2749,17 @@ client.on(
         );
 
       } catch {
-
         return i.reply({
           content:
-            "❌ Impossible de retirer le timeout.",
+            "❌ Impossible.",
           ephemeral: true
         });
-
       }
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // WARN
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "warn"
@@ -2579,84 +2782,31 @@ client.on(
         );
 
       warns.push({
-
         reason,
-
         moderator:
           i.user.id,
-
         date:
           new Date().toISOString()
-
       });
 
-      saveData();
+      cfg.stats.warns++;
 
-      await i.reply(
-        `⚠️ **${user.tag}** a reçu un avertissement.\n> ${reason}\n\nTotal : **${warns.length}**`
-      );
+      saveData();
 
       await sendLog(
         i.guild,
-        `⚠️ **WARN** — ${user.tag}\nRaison : ${reason}`
+        "moderation",
+        `⚠️ **WARN** ${user.tag}\nRaison : ${reason}`
       );
-
-      return;
-    }
-
-    // ==================================================
-    // UNWARN
-    // ==================================================
-
-    if (
-      i.commandName === "unwarn"
-    ) {
-
-      const user =
-        i.options.getUser(
-          "membre"
-        );
-
-      const number =
-        i.options.getInteger(
-          "numero"
-        );
-
-      const warns =
-        getWarns(
-          i.guild.id,
-          user.id
-        );
-
-      if (
-        number < 1 ||
-        number > warns.length
-      ) {
-
-        return i.reply({
-          content:
-            "❌ Ce warn n'existe pas.",
-          ephemeral: true
-        });
-
-      }
-
-      warns.splice(
-        number - 1,
-        1
-      );
-
-      saveData();
 
       return i.reply(
-        `✅ Le warn **#${number}** de **${user.tag}** a été supprimé.`
+        `⚠️ **${user.tag}** averti.\n> ${reason}\n\nTotal : **${warns.length}**`
       );
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // CASIER
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "casier"
@@ -2675,25 +2825,19 @@ client.on(
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
             `📋 Casier • ${user.tag}`
           )
-
           .setThumbnail(
             user.displayAvatarURL()
           );
 
       if (!warns.length) {
-
         embed.setDescription(
           "✅ Aucun avertissement."
         );
-
       } else {
-
         embed.setDescription(
           warns
             .map(
@@ -2702,45 +2846,19 @@ client.on(
             )
             .join("\n\n")
         );
-
       }
 
       return i.reply({
         embeds: [embed]
       });
-
     }
 
-    // ==================================================
-    // CLEAR WARNS
-    // ==================================================
+    // --------------------------------------------------
+    // CLEAR
+    // --------------------------------------------------
 
     if (
-      i.commandName === "clearwarns"
-    ) {
-
-      const user =
-        i.options.getUser(
-          "membre"
-        );
-
-      cfg.warns[user.id] = [];
-
-      saveData();
-
-      return i.reply(
-        `🧹 Tous les avertissements de **${user.tag}** ont été supprimés.`
-      );
-
-    }
-
-    // ==================================================
-    // CLEAR / PURGE
-    // ==================================================
-
-    if (
-      i.commandName === "clear" ||
-      i.commandName === "purge"
+      i.commandName === "clear"
     ) {
 
       const amount =
@@ -2756,30 +2874,33 @@ client.on(
             true
           );
 
+        cfg.stats.deletedMessages +=
+          deleted.size;
+
+        saveData();
+
         return i.reply({
           content:
-            `🧹 **${deleted.size}** message(s) supprimé(s).`,
+            `🧹 **${deleted.size}** messages supprimés.`,
           ephemeral: true
         });
 
       } catch {
-
         return i.reply({
           content:
-            "❌ Impossible de supprimer les messages.",
+            "❌ Impossible de supprimer.",
           ephemeral: true
         });
-
       }
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // SLOWMODE
-    // ==================================================
+    // --------------------------------------------------
 
     if (
-      i.commandName === "slowmode"
+      i.commandName ===
+      "slowmode"
     ) {
 
       const seconds =
@@ -2796,263 +2917,61 @@ client.on(
         return i.reply(
           seconds === 0
             ? "✅ Slowmode désactivé."
-            : `🐢 Slowmode réglé sur **${seconds}s**.`
+            : `🐢 Slowmode : **${seconds}s**.`
         );
 
       } catch {
-
         return i.reply({
           content:
-            "❌ Impossible de modifier le slowmode.",
+            "❌ Impossible.",
           ephemeral: true
         });
-
       }
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // LOCK
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "lock"
     ) {
 
-      try {
+      await i.channel.permissionOverwrites.edit(
+        i.guild.roles.everyone,
+        {
+          SendMessages: false
+        }
+      );
 
-        await i.channel.permissionOverwrites.edit(
-          i.guild.roles.everyone,
-          {
-            SendMessages: false
-          }
-        );
-
-        return i.reply(
-          "🔒 Salon verrouillé."
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible de verrouiller le salon.",
-          ephemeral: true
-        });
-
-      }
-
+      return i.reply(
+        "🔒 Salon verrouillé."
+      );
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // UNLOCK
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "unlock"
     ) {
 
-      try {
+      await i.channel.permissionOverwrites.edit(
+        i.guild.roles.everyone,
+        {
+          SendMessages: null
+        }
+      );
 
-        await i.channel.permissionOverwrites.edit(
-          i.guild.roles.everyone,
-          {
-            SendMessages: null
-          }
-        );
-
-        return i.reply(
-          "🔓 Salon déverrouillé."
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible de déverrouiller le salon.",
-          ephemeral: true
-        });
-
-      }
-
+      return i.reply(
+        "🔓 Salon déverrouillé."
+      );
     }
 
-    // ==================================================
-    // NICK
-    // ==================================================
-
-    if (
-      i.commandName === "nick"
-    ) {
-
-      const user =
-        i.options.getUser(
-          "membre"
-        );
-
-      const nickname =
-        i.options.getString(
-          "pseudo"
-        );
-
-      const member =
-        await i.guild.members
-          .fetch(user.id)
-          .catch(() => null);
-
-      if (
-        !member ||
-        !canModerate(
-          i.member,
-          member
-        )
-      ) {
-
-        return i.reply({
-          content:
-            "❌ Tu ne peux pas modifier ce membre.",
-          ephemeral: true
-        });
-
-      }
-
-      try {
-
-        await member.setNickname(
-          nickname
-        );
-
-        return i.reply(
-          `✅ Pseudo de **${user.tag}** modifié.`
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible de modifier le pseudo.",
-          ephemeral: true
-        });
-
-      }
-
-    }
-
-    // ==================================================
-    // ROLE ADD
-    // ==================================================
-
-    if (
-      i.commandName === "roleadd"
-    ) {
-
-      const user =
-        i.options.getUser(
-          "membre"
-        );
-
-      const role =
-        i.options.getRole(
-          "role"
-        );
-
-      const member =
-        await i.guild.members
-          .fetch(user.id
-        )
-        .catch(() => null);
-
-      if (!member) {
-
-        return i.reply({
-          content:
-            "❌ Membre introuvable.",
-          ephemeral: true
-        });
-
-      }
-
-      try {
-
-        await member.roles.add(
-          role
-        );
-
-        return i.reply(
-          `✅ ${role} ajouté à **${user.tag}**.`
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible d'ajouter ce rôle.",
-          ephemeral: true
-        });
-
-      }
-
-    }
-
-    // ==================================================
-    // ROLE REMOVE
-    // ==================================================
-
-    if (
-      i.commandName === "roleremove"
-    ) {
-
-      const user =
-        i.options.getUser(
-          "membre"
-        );
-
-      const role =
-        i.options.getRole(
-          "role"
-        );
-
-      const member =
-        await i.guild.members
-          .fetch(user.id
-        )
-        .catch(() => null);
-
-      if (!member) {
-
-        return i.reply({
-          content:
-            "❌ Membre introuvable.",
-          ephemeral: true
-        });
-
-      }
-
-      try {
-
-        await member.roles.remove(
-          role
-        );
-
-        return i.reply(
-          `✅ ${role} retiré de **${user.tag}**.`
-        );
-
-      } catch {
-
-        return i.reply({
-          content:
-            "❌ Impossible de retirer ce rôle.",
-          ephemeral: true
-        });
-
-      }
-
-    }
-
-    // ==================================================
+    // --------------------------------------------------
     // USERINFO
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "userinfo"
@@ -3066,31 +2985,24 @@ client.on(
 
       const member =
         await i.guild.members
-          .fetch(user.id
-        )
-        .catch(() => null);
+          .fetch(user.id)
+          .catch(() => null);
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
             `👤 ${user.tag}`
           )
-
           .setThumbnail(
             user.displayAvatarURL()
           )
-
           .addFields(
-
             {
               name: "🆔 ID",
               value: user.id,
               inline: true
             },
-
             {
               name: "🤖 Bot",
               value:
@@ -3099,7 +3011,6 @@ client.on(
                   : "Non",
               inline: true
             },
-
             {
               name: "📅 Compte",
               value:
@@ -3108,7 +3019,6 @@ client.on(
                 )}:R>`,
               inline: true
             },
-
             {
               name: "📥 Rejoint",
               value:
@@ -3119,80 +3029,59 @@ client.on(
                   : "Inconnu",
               inline: true
             }
-
           );
 
       return i.reply({
         embeds: [embed]
       });
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // SERVERINFO
-    // ==================================================
+    // --------------------------------------------------
 
     if (
-      i.commandName === "serverinfo"
+      i.commandName ===
+      "serverinfo"
     ) {
 
-      const guild =
-        i.guild;
-
-      const embed =
-        new EmbedBuilder()
-
-          .setColor(0x5865F2)
-
-          .setTitle(
-            `🏠 ${guild.name}`
-          )
-
-          .setThumbnail(
-            guild.iconURL()
-          )
-
-          .addFields(
-
-            {
-              name: "👥 Membres",
-              value:
-                `${guild.memberCount}`,
-              inline: true
-            },
-
-            {
-              name: "💬 Salons",
-              value:
-                `${guild.channels.cache.size}`,
-              inline: true
-            },
-
-            {
-              name: "🎭 Rôles",
-              value:
-                `${guild.roles.cache.size}`,
-              inline: true
-            },
-
-            {
-              name: "🆔 ID",
-              value:
-                guild.id,
-              inline: true
-            }
-
-          );
-
       return i.reply({
-        embeds: [embed]
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(
+              `🏠 ${i.guild.name}`
+            )
+            .setThumbnail(
+              i.guild.iconURL()
+            )
+            .addFields(
+              {
+                name: "👥 Membres",
+                value:
+                  `${i.guild.memberCount}`,
+                inline: true
+              },
+              {
+                name: "💬 Salons",
+                value:
+                  `${i.guild.channels.cache.size}`,
+                inline: true
+              },
+              {
+                name: "🎭 Rôles",
+                value:
+                  `${i.guild.roles.cache.size}`,
+                inline: true
+              }
+            )
+        ]
       });
-
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // SAY
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "say"
@@ -3205,7 +3094,7 @@ client.on(
 
       await i.reply({
         content:
-          "✅ Message envoyé.",
+          "✅ Envoyé.",
         ephemeral: true
       });
 
@@ -3219,9 +3108,9 @@ client.on(
       return;
     }
 
-    // ==================================================
+    // --------------------------------------------------
     // ANNOUNCE
-    // ==================================================
+    // --------------------------------------------------
 
     if (
       i.commandName === "announce"
@@ -3234,22 +3123,17 @@ client.on(
 
       const embed =
         new EmbedBuilder()
-
           .setColor(0x5865F2)
-
           .setTitle(
             "📢 Annonce"
           )
-
           .setDescription(
             message
           )
-
           .setFooter({
             text:
               `Automod • ${i.user.tag}`
           })
-
           .setTimestamp();
 
       await i.reply({
@@ -3261,229 +3145,83 @@ client.on(
       await i.channel.send({
         embeds: [embed]
       });
-
-      return;
     }
-
-    // ==================================================
-    // SETUP
-    // ==================================================
-
-    if (
-      i.commandName === "setup"
-    ) {
-
-      const sub =
-        i.options.getSubcommand();
-
-      if (
-        sub === "logs"
-      ) {
-
-        const channel =
-          i.options.getChannel(
-            "salon"
-          );
-
-        cfg.logChannel =
-          channel.id;
-
-        saveData();
-
-        return i.reply(
-          `✅ Les logs sont maintenant envoyés dans ${channel}.`
-        );
-
-      }
-
-    }
-
-    // ==================================================
-    // ANTISPAM
-    // ==================================================
-
-    if (
-      i.commandName === "antispam"
-    ) {
-
-      cfg.antispam =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      saveData();
-
-      return i.reply(
-        cfg.antispam
-          ? "🟢 **Anti-Spam activé.**"
-          : "🔴 **Anti-Spam désactivé.**"
-      );
-
-    }
-
-    // ==================================================
-    // ANTILINKS
-    // ==================================================
-
-    if (
-      i.commandName === "antilinks"
-    ) {
-
-      cfg.antilink =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      saveData();
-
-      return i.reply(
-        cfg.antilink
-          ? "🟢 **Anti-Liens activé.**"
-          : "🔴 **Anti-Liens désactivé.**"
-      );
-
-    }
-
-    // ==================================================
-    // ANTIBOT
-    // ==================================================
-
-    if (
-      i.commandName === "antibot"
-    ) {
-
-      cfg.antibot =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      saveData();
-
-      return i.reply(
-        cfg.antibot
-          ? "🟢 **Anti-Bots activé.**"
-          : "🔴 **Anti-Bots désactivé.**"
-      );
-
-    }
-
-    // ==================================================
-    // ANTIRAID
-    // ==================================================
-
-    if (
-      i.commandName === "antiraid"
-    ) {
-
-      cfg.antiraid =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      if (!cfg.antiraid) {
-        cfg.raidJoins = [];
-      }
-
-      saveData();
-
-      return i.reply(
-        cfg.antiraid
-          ? "🟢 **Anti-Raid activé.**\nAutomod surveille maintenant les arrivées rapides."
-          : "🔴 **Anti-Raid désactivé.**"
-      );
-
-    }
-
-    // ==================================================
-    // RAIDMODE
-    // ==================================================
-
-    if (
-      i.commandName === "raidmode"
-    ) {
-
-      cfg.raidmode =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      saveData();
-
-      return i.reply(
-        cfg.raidmode
-          ? "🚨 **Mode Raid activé.**"
-          : "🟢 **Mode Raid désactivé.**"
-      );
-
-    }
-
-    // ==================================================
-    // LOCKDOWN
-    // ==================================================
-
-    if (
-      i.commandName === "lockdown"
-    ) {
-
-      const active =
-        i.options.getBoolean(
-          "actif"
-        );
-
-      cfg.lockdown =
-        active;
-
-      const modified =
-        await setLockdown(
-          i.guild,
-          active
-        );
-
-      saveData();
-
-      return i.reply(
-        active
-          ? `🔒 **Lockdown activé** sur ${modified} salon(s).`
-          : `🔓 **Lockdown désactivé** sur ${modified} salon(s).`
-      );
-
-    }
-
   }
 );
 
 // ======================================================
-// ERREURS
+// TICKET BUTTON
+// ======================================================
+
+client.on(
+  "interactionCreate",
+  async interaction => {
+
+    if (
+      !interaction.isButton()
+    ) {
+      return;
+    }
+
+    if (
+      interaction.customId !==
+      "ticket_close"
+    ) {
+      return;
+    }
+
+    if (
+      !interaction.channel ||
+      !interaction.channel.name?.startsWith(
+        "ticket-"
+      )
+    ) {
+      return;
+    }
+
+    await interaction.reply(
+      "🔒 Fermeture du ticket..."
+    );
+
+    setTimeout(
+      async () => {
+        try {
+          await interaction.channel.delete(
+            "Automod • Ticket fermé"
+          );
+        } catch {}
+      },
+      1500
+    );
+  }
+);
+
+// ======================================================
+// ERROR HANDLERS
 // ======================================================
 
 process.on(
   "unhandledRejection",
   error => {
-
     console.error(
       "❌ Unhandled Rejection:",
       error
     );
-
   }
 );
 
 process.on(
   "uncaughtException",
   error => {
-
     console.error(
       "❌ Uncaught Exception:",
       error
     );
-
   }
 );
 
 // ======================================================
-// CONNEXION
+// LOGIN
 // ======================================================
 
-client.login(
-  TOKEN
-);
+client.login(TOKEN);
